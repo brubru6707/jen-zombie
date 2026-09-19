@@ -54,3 +54,37 @@ that is TCC on ~/Documents -- grant Full Disk Access to your terminal, or move
 this folder outside ~/Documents.
 
 See images/README.md for the filename convention.
+
+## Tools and equipment
+
+### Hardware
+
+| Item | Role |
+|---|---|
+| Samsung Galaxy A15 5G (SM-S156V), Android 15 | AR device. 6DoF tracking, camera, microphone |
+| ESP32-D0WD-V3 handheld | Controller: analog joystick, action + stick buttons, sensitivity toggle, 3-LED meter |
+| CP2102 USB-to-serial bridge | Firmware flashing and the wired controller transport |
+| External USB battery | Untethered power for the handheld |
+| macOS laptop | HTTPS server, pipeline host, ADB host |
+
+### Models and APIs
+
+| Service | Model | Role |
+|---|---|---|
+| NVIDIA | `nemotron-3-super-120b-a12b` | Turns a caption into a world: biome, difficulty scales, per-mob dialogue |
+| Google | `gemini-3.5-flash-lite` | Captions the camera frame |
+| NVIDIA | `llama-3.2-11b-vision-instruct` | Benchmarked alternative vision leg, selectable |
+
+### Software
+
+| Tool | Role |
+|---|---|
+| WebXR Device API + ARCore 1.56 | AR session, hit-test, anchors, camera access, `local-floor` |
+| three.js | Rendering |
+| Chrome 153 (Android) | WebXR host |
+| Web Audio API (`AnalyserNode`) | Microphone loudness for the hostility mechanic |
+| Python 3 | Pipeline and server. Stdlib `urllib` + Pillow, no HTTP dependency |
+| mkcert | Local CA for the HTTPS origin WebXR requires |
+| adb / platform-tools | Device probing, port tunnelling, firmware host |
+| arduino-cli + ESP32 Arduino core | Controller firmware |
+| Kenney sprite packs (CC0) | Sprite art |
