@@ -1,0 +1,9 @@
+# one filename per line; fallback when the OS denies directory listing
+desert_beach_drysand.jpg
+desert_dunes.jpg
+forest_pines.jpg
+lab_electronics_bench.jpg
+rocky_boulders.jpg
+snow_slope.jpg
+street_city.jpg
+water_beach_surf.jpg

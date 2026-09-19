@@ -1,0 +1,428 @@
+/*
+ * jenzombies controller firmware
+ * ESP32-D0WD-V3, Bluetooth Classic SPP, device name "SteelHacks".
+ *
+ * Replaces the earlier WiFi/UDP transport. The wire format is unchanged, so the
+ * game side needs no protocol work: the same ASCII lines now ride an SPP stream
+ * instead of datagrams.
+ *
+ *   OUT (board to Mac), one line per input change:
+ *     JZ1 <ax> <ay> <sw> <atk> <sens>
+ *       ax, ay  joystick axes, 0..4095, already centre corrected (see below)
+ *       sw      joystick switch, 1 = pressed
+ *       atk     attack button, 1 = pressed
+ *       sens    sensitivity pot, 0..4095
+ *
+ *   IN (Mac to board):
+ *     LED <green0_1> <yellow0_1> <red0_1>   direct lamp brightness, 0..1 each
+ *     POL <0|1>                             0 = active high, 1 = active low
+ *
+ * The LEDs are a live sound meter: green for quiet, yellow for medium, red for
+ * loud. Brightness is computed on the Mac and sent straight through, so the
+ * meter's behaviour can change without reflashing the board.
+ *
+ * Polarity is a runtime setting because it is a property of the wiring, not the
+ * code: common-cathode modules light on HIGH, common-anode on LOW, and getting
+ * it wrong makes every lamp show the exact inverse of its meaning.
+ *
+ * Sends on CHANGE, not on a poll timer: the loop samples fast but only emits a
+ * line when something a human actually did crosses a threshold. A resting stick
+ * produces no traffic at all. A heartbeat still goes out every HEARTBEAT_MS so
+ * the Mac can tell "idle" apart from "disconnected".
+ */
+
+#include "BluetoothSerial.h"
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth Classic is not enabled in this build. Select a plain ESP32 board, not an S3/C3.
+#endif
+
+BluetoothSerial SerialBT;
+
+// ---------------------------------------------------------------- pin mapping
+/*
+ * Measured on the bench, not assumed: pushing the stick horizontally moves the
+ * pin on GPIO 33 and pushing it vertically moves GPIO 32. The module is wired
+ * with its axes crossed relative to the silkscreen, so the mapping is corrected
+ * here, at the source, rather than being worked around on the Mac.
+ *
+ * Bench figures behind these constants:
+ *   horizontal (33)  centre 1978, full left 0, full right 4095
+ *   vertical   (32)  centre 2004, full down 0, full up   4095
+ *   per-half spans 1978/2117/2092/2003, asymmetry 7%, resting jitter 11/12
+ */
+const int PIN_JOY_X   = 33;   // ADC1_CH5, horizontal
+const int PIN_JOY_Y   = 32;   // ADC1_CH4, vertical
+
+/*
+ * Full up reads 4095, but the game wants up to be negative: screen y grows
+ * downward, so KEY_UP yields -1 and the stick has to agree with the keyboard.
+ */
+const bool INVERT_Y = true;
+const int PIN_JOY_SW  = 27;   // INPUT_PULLUP, pressed = LOW
+const int PIN_ATTACK  = 13;   // INPUT_PULLUP, pressed = LOW
+const int PIN_SENS    = 23;   // sensitivity input
+
+/*
+ * Lamp pins, corrected 2026-09-19 after checking the board by eye.
+ *
+ * The three constants below used to read 18=yellow, 19=green, 21=red. That is
+ * not how this unit is wired. Driving each pin on its own with digitalWrite and
+ * naming the colour that lit gives 19=yellow, 18=red, 21=green, a three way
+ * rotation.
+ *
+ * The effect was that the meter ran backwards in the worst possible way: a
+ * quiet room lit the yellow lamp, a medium room lit red, and shouting lit
+ * green. Two independent observations during the sweep predicted exactly that,
+ * so this is a mapping fault and not current bleed between lamps.
+ */
+const int PIN_LED_RED    = 18;  // regenerating
+const int PIN_LED_YELLOW = 19;  // hostility
+const int PIN_LED_GREEN  = 21;  // health
+
+/*
+ * GPIO 23 is NOT an ADC pin on the ESP32. ADC2 is also unusable while the radio
+ * is on, which rules out most of the remaining pins here. So the sensitivity
+ * input is read as a digital toggle rather than a pot, and reported as one of
+ * two ADC-shaped values so the existing wire format and the Mac side parser do
+ * not change. If you want a real analog pot later, move it to GPIO 34/35/36/39
+ * (ADC1, input only) and set SENS_IS_ANALOG to 1.
+ */
+#define SENS_IS_ANALOG 0
+
+// ------------------------------------------------------------------ behaviour
+const unsigned long SAMPLE_MS     = 8;     // ~125 Hz sampling
+const unsigned long HEARTBEAT_MS  = 500;   // liveness even when nothing moves
+const unsigned long DEBOUNCE_MS   = 25;
+
+// Emit only when an axis moves at least this much, in raw ADC counts. Below
+// this is stick noise, not intent.
+//
+// Measured resting jitter after the rails were fixed is 11 counts horizontal
+// and 12 vertical, so 18 sits 1.5x above the noise floor. That is finer than
+// the deadzone (about 102 counts), so it only affects smoothness once the
+// stick is already outside the deadzone, which is where it matters.
+// The original 40 was a guess made before any stick had been read.
+const int AXIS_EMIT_DELTA = 18;
+
+// ------------------------------------------------------- boot time calibration
+/*
+ * The stick is on 3.3V, so full scale is not the 2048 midpoint you would get
+ * from a 5V rail divided onto a 0..4095 range. Rather than hardcode a centre,
+ * sample the resting position at boot and treat that as zero. This also cancels
+ * per unit variation and any slight mechanical offset in the gimbal.
+ *
+ * Hold the stick still during the first second after reset.
+ */
+int centreX = 2048;
+int centreY = 2048;
+int restNoiseX = 0;
+int restNoiseY = 0;
+
+// Reported extremes, learned as the stick actually gets pushed. Starting from
+// the boot centre means the first full deflection defines the usable range.
+int minX, maxX, minY, maxY;
+
+// ------------------------------------------------------------------- state
+int lastAx = -1, lastAy = -1, lastSens = -1;
+int lastSw = -1, lastAtk = -1;
+unsigned long lastSendMs = 0;
+unsigned long swChangeMs = 0, atkChangeMs = 0;
+int swStable = 1, atkStable = 1;      // 1 = released (pullup idle high)
+int swReading = 1, atkReading = 1;
+
+bool wasConnected = false;
+
+// --------------------------------------------------------------------- helpers
+
+int readAveraged(int pin, int n = 8) {
+  long total = 0;
+  for (int i = 0; i < n; i++) {
+    total += analogRead(pin);
+    delayMicroseconds(60);
+  }
+  return (int)(total / n);
+}
+
+void calibrateCentre() {
+  // Discard the first reads: the ADC settles for a moment after boot.
+  for (int i = 0; i < 16; i++) { analogRead(PIN_JOY_X); analogRead(PIN_JOY_Y); delay(2); }
+
+  long sx = 0, sy = 0;
+  int lox = 4095, hix = 0, loy = 4095, hiy = 0;
+  const int N = 64;
+  for (int i = 0; i < N; i++) {
+    int x = analogRead(PIN_JOY_X);
+    int y = analogRead(PIN_JOY_Y);
+    sx += x; sy += y;
+    if (x < lox) lox = x;  if (x > hix) hix = x;
+    if (y < loy) loy = y;  if (y > hiy) hiy = y;
+    delay(4);
+  }
+  centreX = (int)(sx / N);
+  centreY = (int)(sy / N);
+  restNoiseX = hix - lox;
+  restNoiseY = hiy - loy;
+
+  minX = maxX = centreX;
+  minY = maxY = centreY;
+}
+
+/*
+ * Re-centre a raw reading so the resting position maps to 2048, then rescale
+ * each half of the travel independently.
+ *
+ * Independent halves matter: a 3.3V stick is rarely symmetric, and if you scale
+ * both directions by one factor the axis reaches full travel one way and stops
+ * short the other. The Mac side already applies its own deadzone, so this stage
+ * deliberately does no deadzoning, it only linearises.
+ */
+int normaliseAxis(int raw, int centre, int lo, int hi) {
+  long out;
+  if (raw >= centre) {
+    int span = hi - centre;
+    if (span < 200) span = 2047;        // not yet pushed that far, assume full
+    out = 2048L + (long)(raw - centre) * 2047L / span;
+  } else {
+    int span = centre - lo;
+    if (span < 200) span = 2048;
+    out = 2048L - (long)(centre - raw) * 2048L / span;
+  }
+  if (out < 0) out = 0;
+  if (out > 4095) out = 4095;
+  return (int)out;
+}
+
+int readSensitivity() {
+#if SENS_IS_ANALOG
+  return readAveraged(PIN_SENS, 4);
+#else
+  // Digital toggle reported in ADC units: released is 1.0x, pressed is ~1.75x.
+  return digitalRead(PIN_SENS) == LOW ? 4095 : 2048;
+#endif
+}
+
+/*
+ * LED wiring polarity, overridable at runtime with the POL command.
+ *
+ * This board: each LED has its cathode on GND and its anode on a GPIO through a
+ * 220 ohm resistor. That is ACTIVE HIGH - the pin sources current and HIGH
+ * lights the lamp. There is no common pin to tie to a rail.
+ *
+ * It defaulted to active low for a while, which inverted every lamp: the meter
+ * asked for full green and the firmware drove the pin LOW, turning it off.
+ */
+bool ledActiveLow = false;
+
+void writeLamp(int pin, float v) {
+  int duty = (int)(constrain(v, 0.0f, 1.0f) * 255.0f);
+  analogWrite(pin, ledActiveLow ? 255 - duty : duty);
+}
+
+void applyLeds(float green, float yellow, float red) {
+  writeLamp(PIN_LED_GREEN, green);
+  writeLamp(PIN_LED_YELLOW, yellow);
+  writeLamp(PIN_LED_RED, red);
+}
+
+void ledBootFlash() {
+  int pins[3] = {PIN_LED_GREEN, PIN_LED_YELLOW, PIN_LED_RED};
+  for (int r = 0; r < 2; r++) {
+    for (int i = 0; i < 3; i++) {
+      writeLamp(pins[i], 1.0f); delay(90); writeLamp(pins[i], 0.0f);
+    }
+  }
+}
+
+void applyLedLine(const char* line) {
+  float g = 0, y = 0, r = 0;
+  int pol = 0;
+  if (sscanf(line, "LED %f %f %f", &g, &y, &r) == 3) {
+    applyLeds(g, y, r);
+  } else if (strncmp(line, "RAW ", 4) == 0) {
+    // Diagnostic: drive one pin with plain digitalWrite, bypassing PWM.
+    // Distinguishes "LED or wiring is dead" from "analogWrite is not driving
+    // this pin", which look identical from the Mac.
+    int pin = -1, val = 0;
+    if (sscanf(line, "RAW %d %d", &pin, &val) == 2) {
+      if (pin == PIN_LED_GREEN || pin == PIN_LED_YELLOW || pin == PIN_LED_RED) {
+        if (val == 2) {
+          // High impedance. If a lamp still lights with every other pin in this
+          // state, current is reaching it through another LED, which means the
+          // module's common pin is not tied to a rail.
+          pinMode(pin, INPUT);
+          Serial.printf("RAW pin %d -> HI-Z\n", pin);
+        } else {
+          pinMode(pin, OUTPUT);
+          digitalWrite(pin, val ? HIGH : LOW);
+          Serial.printf("RAW pin %d -> %s\n", pin, val ? "HIGH" : "LOW");
+        }
+      }
+    }
+  } else if (sscanf(line, "POL %d", &pol) == 1) {
+    ledActiveLow = (pol != 0);
+    // Blink whichever way is now "on" so the change is visible immediately.
+    applyLeds(1, 1, 1); delay(150); applyLeds(0, 0, 0);
+    Serial.printf("polarity: active %s\n", ledActiveLow ? "LOW" : "HIGH");
+  }
+}
+
+void handleIncomingFrom(Stream &io, char *buf, int &n, int cap) {
+  while (io.available()) {
+    char c = (char)io.read();
+    if (c == '\n' || c == '\r') {
+      if (n > 0) { buf[n] = '\0'; applyLedLine(buf); n = 0; }
+    } else if (n < cap - 1) {
+      buf[n++] = c;
+    } else {
+      n = 0;
+    }
+  }
+}
+
+void handleIncoming() {
+  static char btBuf[64];  static int btN = 0;
+  static char usbBuf[64]; static int usbN = 0;
+  handleIncomingFrom(SerialBT, btBuf, btN, sizeof(btBuf));
+  handleIncomingFrom(Serial, usbBuf, usbN, sizeof(usbBuf));
+}
+
+void handleIncomingOld() {
+  static char buf[64];
+  static int n = 0;
+  while (SerialBT.available()) {
+    char c = (char)SerialBT.read();
+    if (c == '\n' || c == '\r') {
+      if (n > 0) {
+        buf[n] = '\0';
+        float h = 0, ho = 0; int rg = 0;
+        if (sscanf(buf, "LED %f %f %d", &h, &ho, &rg) == 3) {
+          applyLeds(h, ho, rg != 0);
+        }
+        n = 0;
+      }
+    } else if (n < (int)sizeof(buf) - 1) {
+      buf[n++] = c;
+    } else {
+      n = 0;  // overlong line, drop it rather than wrap
+    }
+  }
+}
+
+// ------------------------------------------------------------------- lifecycle
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  pinMode(PIN_JOY_SW, INPUT_PULLUP);
+  pinMode(PIN_ATTACK, INPUT_PULLUP);
+#if !SENS_IS_ANALOG
+  pinMode(PIN_SENS, INPUT_PULLUP);
+#endif
+  pinMode(PIN_LED_YELLOW, OUTPUT);
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_RED, OUTPUT);
+
+  analogReadResolution(12);                  // 0..4095
+  analogSetPinAttenuation(PIN_JOY_X, ADC_11db);   // full 0..3.3V swing
+  analogSetPinAttenuation(PIN_JOY_Y, ADC_11db);
+
+  ledBootFlash();
+
+  Serial.println();
+  Serial.println("jenzombies controller: calibrating centre, hold the stick still");
+  calibrateCentre();
+  Serial.printf("centre  X=%d Y=%d   rest noise  X=%d Y=%d\n",
+                centreX, centreY, restNoiseX, restNoiseY);
+
+  SerialBT.begin("SteelHacks");
+  Serial.println("Bluetooth SPP up as \"SteelHacks\", waiting for the Mac to connect");
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  bool connected = SerialBT.hasClient();
+  if (connected != wasConnected) {
+    wasConnected = connected;
+    Serial.println(connected ? "SPP client connected" : "SPP client gone");
+    if (!connected) {
+      // Drop the LEDs so the board does not sit lit after the game closes.
+      applyLeds(0, 0, 0);
+      lastAx = lastAy = lastSens = lastSw = lastAtk = -1;  // force a full resend
+    } else {
+      digitalWrite(PIN_LED_GREEN, HIGH); delay(120); digitalWrite(PIN_LED_GREEN, LOW);
+    }
+  }
+
+  handleIncoming();
+
+  static unsigned long lastSample = 0;
+  if (now - lastSample < SAMPLE_MS) return;
+  lastSample = now;
+
+  int rawX = readAveraged(PIN_JOY_X, 4);
+  int rawY = readAveraged(PIN_JOY_Y, 4);
+  if (rawX < minX) minX = rawX;
+  if (rawX > maxX) maxX = rawX;
+  if (rawY < minY) minY = rawY;
+  if (rawY > maxY) maxY = rawY;
+
+  int ax = normaliseAxis(rawX, centreX, minX, maxX);
+  int ay = normaliseAxis(rawY, centreY, minY, maxY);
+  if (INVERT_Y) ay = 4095 - ay;
+
+  // Debounce both buttons. INPUT_PULLUP means LOW is pressed, so invert here
+  // and let the rest of the system speak in 1 = pressed.
+  int swNow  = digitalRead(PIN_JOY_SW);
+  int atkNow = digitalRead(PIN_ATTACK);
+  if (swNow != swReading)  { swReading = swNow;  swChangeMs = now; }
+  if (atkNow != atkReading) { atkReading = atkNow; atkChangeMs = now; }
+  if (now - swChangeMs  > DEBOUNCE_MS) swStable  = swReading;
+  if (now - atkChangeMs > DEBOUNCE_MS) atkStable = atkReading;
+
+  int sw  = (swStable  == LOW) ? 1 : 0;
+  int atk = (atkStable == LOW) ? 1 : 0;
+  int sens = readSensitivity();
+
+  bool changed =
+      (lastAx < 0) ||
+      (abs(ax - lastAx) >= AXIS_EMIT_DELTA) ||
+      (abs(ay - lastAy) >= AXIS_EMIT_DELTA) ||
+      (sw != lastSw) || (atk != lastAtk) ||
+      (abs(sens - lastSens) >= 200);
+
+  bool heartbeat = (now - lastSendMs) >= HEARTBEAT_MS;
+
+  /*
+   * Emit on BOTH transports.
+   *
+   * macOS will happily open /dev/cu.<name> for a paired SPP device without
+   * ever establishing the RFCOMM channel, which leaves hasClient() false and
+   * the board mute while the Mac believes it is connected. Measured directly:
+   * port opens, board reports bt=0, zero bytes cross. Gating output on the
+   * Bluetooth client therefore makes the cable useless too, for no reason.
+   *
+   * The USB line costs nothing when unused and is the transport that cannot
+   * silently fail, so it is always live. The Mac side parses JZ1 identically
+   * from either path.
+   */
+  if (changed || heartbeat) {
+    if (connected) {
+      SerialBT.printf("JZ1 %d %d %d %d %d\n", ax, ay, sw, atk, sens);
+    }
+    Serial.printf("JZ1 %d %d %d %d %d\n", ax, ay, sw, atk, sens);
+    lastAx = ax; lastAy = ay; lastSw = sw; lastAtk = atk; lastSens = sens;
+    lastSendMs = now;
+  }
+
+  // Same line to USB serial so every control can be verified with no Mac side
+  // and no Bluetooth in the picture. This is what `verify_controller.py` reads.
+  static unsigned long lastDbg = 0;
+  if (now - lastDbg >= 100) {
+    lastDbg = now;
+    Serial.printf("RAW x=%4d y=%4d (centre %4d/%4d) -> ax=%4d ay=%4d sw=%d atk=%d sens=%d bt=%d\n",
+                  rawX, rawY, centreX, centreY, ax, ay, sw, atk, sens, connected ? 1 : 0);
+  }
+}
