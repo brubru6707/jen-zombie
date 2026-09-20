@@ -118,6 +118,7 @@ See images/README.md for the filename convention.
 | ESP32-D0WD-V3 handheld | Controller: analog joystick, action + stick buttons, sensitivity toggle, 3-LED meter |
 | CP2102 USB-to-serial bridge | Firmware flashing and the wired controller transport |
 | External USB battery | Untethered power for the handheld |
+| Raspberry Pi 4 | Dedicated 2.4 GHz access point and controller bridge. The ESP32 is 2.4 GHz-only and venue WiFi is 5 GHz |
 | macOS laptop | HTTPS server, world service host, ADB host |
 
 ### Models and APIs
@@ -126,6 +127,7 @@ See images/README.md for the filename convention.
 |---|---|---|
 | NVIDIA | `nemotron-3-super-120b-a12b` | Turns a caption into a world: biome, difficulty scales, per-mob dialogue |
 | Google | `gemini-3.5-flash-lite` | Captions the camera frame |
+| ElevenLabs | `eleven_multilingual_v2` | Speaks the mob dialogue Nemotron writes for each world |
 | NVIDIA | `llama-3.2-11b-vision-instruct` | Benchmarked alternative vision leg, selectable |
 
 ### Software
@@ -140,4 +142,23 @@ See images/README.md for the filename convention.
 | mkcert | Local CA for the HTTPS origin WebXR requires |
 | adb / platform-tools | Device probing, port tunnelling, firmware host |
 | arduino-cli + ESP32 Arduino core | Controller firmware |
+| Solana (devnet) + SPL Token | On-chain score settlement. `solders` / `solana-py` |
+| DigitalOcean | Droplet hosting the public live-view site |
+| .tech domain | jenzombie.tech, the public site |
 | Kenney sprite packs (CC0) | Sprite art |
+
+### AI tools
+
+Disclosed per SteelHacks rules. AI coding assistants were used heavily
+throughout this project.
+
+| Tool | What it was used for |
+|---|---|
+| Claude (Claude Code) | Pair-programming across the whole build: the model benchmark rigs, the WebXR client, the ESP32 firmware rewrite from Bluetooth SPP to WiFi TCP, the Raspberry Pi bridge, the world HTTP service, the Solana settlement poller, and the test suites. Also used for planning, code review, and debugging sessions. |
+| Claude (Fable) | The AR client build and the Pi integration work. |
+
+Design decisions, the hardware build, all measurements and every verification
+on the physical device were done by me. The benchmark results quoted in this
+README were produced by running the rigs in `bench*.py`, which are in this
+repository and re-runnable.
+
