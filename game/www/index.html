@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>zombie-ar</title><link rel="stylesheet" href="css/ar.css">
+</head><body class="launch">
+<h1>zombie-ar</h1>
+<div class="sub" id="ctx"></div>
+<a class="nav" href="probe.html">Stage 0 — capability probe<small>navigator.xr, hit-test, camera-access</small></a>
+<a class="nav" href="stage1.html">Stage 1 — floor + one box<small>anchored vs unanchored drift test</small></a>
+<a class="nav" href="stage2.html">Stage 2 — mobs<small>ring spawn, walk in, stop at arm's length</small></a>
+<a class="nav" href="stage3.html">Stage 3 — countdown + world swap<small>30 s clock, prefetched canned worlds</small></a>
+<a class="nav" href="stage3.html?cycle=8000">Stage 3 (fast, 8 s cycle)<small>for testing swaps quickly</small></a>
+<a class="nav" href="stage3.html?cycle=8000&delay=12000">Stage 3 (late worlds)<small>server slower than the clock — exercises INCOMING</small></a>
+<div class="sub" style="margin-top:18px">The dashboard is not here. It belongs on the
+laptop: <b>http://10.42.1.1:8080/dashboard.html</b>. This phone is the game.</div>
+<script>
+document.getElementById('ctx').textContent =
+  location.origin + (window.isSecureContext ? '  secure ✓' : '  NOT SECURE ✗');
+</script>
+</body></html>

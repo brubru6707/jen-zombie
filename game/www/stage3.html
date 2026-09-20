@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stage 3 — countdown + world swap</title><link rel="stylesheet" href="css/ar.css">
+<style>
+  #clock { position:fixed; top:calc(8px + env(safe-area-inset-top)); left:12px; right:108px;
+           text-align:center; font-size:64px; font-weight:800; letter-spacing:2px;
+           text-shadow:0 2px 14px rgba(0,0,0,.85); pointer-events:none; display:none; }
+  #clock.on { display:block; }
+  #clock.incoming { font-size:40px; color:#ffb020; }
+  #world { position:fixed; left:0; right:0; bottom:calc(72px + env(safe-area-inset-bottom));
+           text-align:center; font-size:19px; font-weight:700; pointer-events:none;
+           text-shadow:0 2px 10px rgba(0,0,0,.9); display:none; }
+  #world.on { display:block; }
+  #world small { display:block; font-weight:400; font-size:15px; color:#c6cfda; margin-top:3px; }
+  /* Mic controls live inside the dom-overlay root so they are usable during
+     the AR session. The root is pointer-events:none; this island re-enables.
+     Two small chips, nothing else: TRIM moved to the dashboard, and EXIT is
+     gone (the system back gesture ends the session). */
+  #micctl { position:fixed; left:12px; bottom:calc(10px + env(safe-area-inset-bottom));
+            display:none; gap:6px; align-items:center; pointer-events:auto; }
+  #micctl.on { display:flex; }
+  #micctl button { width:auto; margin:0; padding:7px 11px; font-size:12px;
+                   font-weight:700; letter-spacing:.5px; border-radius:8px;
+                   background:rgba(40,46,54,.9); display:flex; align-items:center; gap:6px; }
+  #micctl button.cal { background:rgba(47,125,79,.9); }
+  #micctl .lbl { font-size:10px; color:#8b96a5; font-weight:400; }
+  #micctl b { font-size:12px; min-width:44px; text-align:left; }
+  /* Five dots: which preset, at a glance, without spelling it out. */
+  #sensdots { display:flex; gap:3px; }
+  #sensdots i { width:4px; height:4px; border-radius:50%; background:#4a525d; }
+  #sensdots i.on { background:#4aa3ff; }
+  #calmsg { position:fixed; left:0; right:0; bottom:calc(60px + env(safe-area-inset-bottom));
+            text-align:center; font-size:20px; font-weight:800; color:#ffb020;
+            text-shadow:0 2px 10px rgba(0,0,0,.9); display:none; pointer-events:none; }
+  #calmsg.on { display:block; }
+  /* Handheld: a pill that exists only while frames arrive, and a one-line
+     flash for its actions. Nothing appears when there is no controller. */
+  /* A pinned room ignores the microphone. That has to be visible, or a
+     leftover ?mood= in the URL looks like the feature being broken. */
+  #pinned { position:fixed; left:12px; bottom:calc(46px + env(safe-area-inset-bottom));
+            font-size:11px; font-weight:800; letter-spacing:1px; padding:3px 8px;
+            border-radius:999px; background:rgba(107,58,18,.9); color:#ffd7a8;
+            border:1px solid #8a4c18; display:none; pointer-events:none; }
+  #pinned.on { display:block; }
+  #pad { position:fixed; top:calc(40px + env(safe-area-inset-top)); right:12px;
+         font-size:12px; font-weight:800; letter-spacing:1px; padding:4px 9px;
+         border-radius:999px; background:rgba(18,50,31,.85); color:#37d67a;
+         border:1px solid #1e5233; display:none; pointer-events:none; }
+  #pad.on { display:block; }
+  #padmsg { position:fixed; left:0; right:0; top:calc(88px + env(safe-area-inset-top));
+            text-align:center; font-size:22px; font-weight:800; color:#fff;
+            text-shadow:0 2px 10px rgba(0,0,0,.9); display:none; pointer-events:none; }
+  #padmsg.on { display:block; }
+  /* Hearts, top right. Pixel shapes rather than a font glyph so they read the
+     same on every device and match the sprite art. */
+  #status { position:fixed; top:calc(8px + env(safe-area-inset-top)); right:12px;
+            display:none; gap:10px; align-items:center; pointer-events:none; }
+  #status.on { display:flex; }
+  #score { font-size:22px; font-weight:800; letter-spacing:1px; color:#ffd166;
+           text-shadow:0 2px 6px rgba(0,0,0,.95); font-variant-numeric:tabular-nums; }
+  #score.up { animation:pop 260ms ease-out; }
+  @keyframes pop { 0% { transform:scale(1.45); color:#fff } 100% { transform:scale(1) } }
+  #hearts { display:flex; gap:5px; }
+  #hearts svg { width:26px; height:24px; filter:drop-shadow(0 2px 4px rgba(0,0,0,.9)); }
+  #status.immune #hearts { animation:pulse 620ms ease-in-out infinite alternate; }
+  @keyframes pulse { from { opacity:.45 } to { opacity:1 } }
+  /* The blow itself: a red wash over the whole view, strongest on impact. */
+  #hurt { position:fixed; inset:0; pointer-events:none; opacity:0;
+          background:radial-gradient(ellipse at center, rgba(190,20,20,.10) 25%, rgba(190,20,20,.72) 100%); }
+  #scanhint { position:fixed; left:0; right:0; top:calc(74px + env(safe-area-inset-top));
+              text-align:center; font-size:15px; font-weight:700; color:#5be08a;
+              text-shadow:0 2px 8px rgba(0,0,0,.95); display:none; pointer-events:none; }
+  #scanhint.on { display:block; }
+  /* Tracking loss looks exactly like a crash from the outside: the picture
+     stops moving. Saying so turns a freeze into feedback. */
+  #tracklost { position:fixed; left:0; right:0; top:42%; text-align:center;
+               font-size:20px; font-weight:800; color:#ffb020; display:none;
+               pointer-events:none; text-shadow:0 2px 12px rgba(0,0,0,.95); }
+  #tracklost.on { display:block; }
+  /* What someone is saying, over their head. Positioned each frame by
+     projecting the speaker's world position, so it tracks them as you move. */
+  #bubble { position:fixed; left:0; top:0; max-width:46vw; padding:7px 11px;
+            border-radius:12px; font-size:15px; font-weight:700; line-height:1.3;
+            background:rgba(12,15,19,.88); border:1px solid #2a323d; color:#e8ecf1;
+            transform:translate(-50%,-100%); pointer-events:none; display:none;
+            text-shadow:none; box-shadow:0 4px 14px rgba(0,0,0,.5); }
+  #bubble.on { display:block; }
+  #bubble.calm { border-color:#2f7d4f; color:#bfeccd; }
+  #bubble.hostile { border-color:#6b2f2f; color:#ffd9d9; }
+  #bubble .tail { position:absolute; left:50%; bottom:-7px; width:12px; height:12px;
+                  margin-left:-6px; background:inherit; border-right:1px solid inherit;
+                  border-bottom:1px solid inherit; transform:rotate(45deg); }
+  #bubble .mute { display:block; font-size:11px; font-weight:400; color:#8b96a5; margin-top:3px; }
+  #tracklost small { display:block; font-size:14px; font-weight:400; color:#e8ecf1; margin-top:4px; }
+  #clock.ready { color:#5be08a; font-size:32px; letter-spacing:1px; }
+  /* Landscape is the shape the game is played in: the clock and the world
+     banner move out of the middle so they never sit over what you are
+     pointing at, and everything shrinks. */
+  @media (orientation: landscape) {
+    #clock { font-size:40px; text-align:left; left:14px; right:120px; top:calc(14px + env(safe-area-inset-top)); }
+    /* Landscape keeps the system status strip across the top, and
+       env(safe-area-inset-top) is 0 there, so the top row is nudged clear of
+       it by hand. */
+    #status { top:calc(30px + env(safe-area-inset-top)); }
+    #score { font-size:19px; }
+    #pad { top:calc(60px + env(safe-area-inset-top)); }
+    #padmsg { top:calc(30px + env(safe-area-inset-top)); }
+    #clock.incoming, #clock.ready { font-size:26px; }
+    #scanhint { top:calc(56px + env(safe-area-inset-top)); text-align:left; left:14px; right:120px; font-size:13px; }
+    #hearts svg { width:20px; height:18px; }
+    #world { bottom:calc(10px + env(safe-area-inset-bottom)); right:12px; left:auto;
+             text-align:right; font-size:16px; max-width:46vw; }
+    #world small { font-size:13px; }
+    #padmsg { top:calc(14px + env(safe-area-inset-top)); font-size:18px; }
+    #calmsg { bottom:calc(52px + env(safe-area-inset-bottom)); font-size:17px; }
+  }
+  /* Launch screen: the AR session keeps whatever orientation the page had when
+     it started (Chrome runs it NOSENSOR and screen.orientation.lock() is not
+     available inside a session), so the only way in is to be landscape first. */
+  #rotate { display:none; background:rgba(255,176,32,.14); border:1px solid #6b4a10;
+            border-radius:12px; padding:14px; color:var(--warn); font-weight:700;
+            text-align:center; margin:10px 0; }
+  body.portrait #rotate { display:block; }
+  body.portrait #enter { display:none; }
+</style>
+</head><body class="launch">
+<h1>Stage 3 — countdown + world swap</h1>
+<div class="sub">A 30 s countdown. The next world is fetched from this same
+origin <b>during</b> the countdown, and its geometry is built while the clock
+runs, so the swap at zero costs no frames. If it is late the clock does not
+wait — it shows INCOMING and swaps the moment it lands. Canned worlds only;
+the model is not wired yet.</div>
+<button id="enter">ENTER AR</button>
+<div id="rotate">TURN THE PHONE SIDEWAYS<br><span style="font-weight:400;font-size:14px;color:#c6cfda">
+The AR session keeps the orientation it starts in, so it has to begin in landscape.
+Auto-rotate must be on.</span></div>
+<div class="sub" id="opts">cycle 30 s · server delay via ?delay=ms&amp;jitter=ms</div>
+<div id="err" class="sub"></div>
+<!-- Everything that must be visible during the session lives INSIDE the
+     dom-overlay root: WebXR renders only the root element's subtree. -->
+<div id="hud">
+<div id="clock"></div>
+<div id="scanhint"></div>
+<div id="tracklost">FINDING THE ROOM<small>hold still for a moment and keep the camera on something with detail</small></div>
+<div id="status"><span id="score">0000</span><div id="hearts"></div></div>
+<div id="hurt"></div>
+<div id="bubble"></div>
+<div id="pinned"></div>
+<div id="world"></div>
+<div id="calmsg"></div>
+<div id="pad">PAD</div>
+<div id="padmsg"></div>
+<div id="micctl">
+  <button id="sens" title="tap to step sensitivity"><span class="lbl">SENS</span><b id="sensval">NORMAL</b><span id="sensdots"></span></button>
+  <button id="calibrate" class="cal">CAL</button>
+</div>
+</div>
+<script type="module">
+import { THREE, Hud, Fps, Telemetry, log, warn, startAR, makeRenderer, basicScene, postResult,
+         CameraFrameSource, requestFrameRate }
+  from './js/arkit.js';
+import { spawnRing, placeRing, STOP_DISTANCE, setStopDistance } from './js/mobs.js';
+import { WorldCycle } from './js/worldcycle.js';
+import { MicMeter, MIC, PRESETS, PRESET_ORDER } from './js/mic.js';
+import { preloadSprites } from './js/sprites.js';
+import { Weapon, preloadWeapons, weaponFor } from './js/weapon.js';
+import { Controller } from './js/controller.js';
+import { LedMeter } from './js/led.js';
+import { FrameGrabber } from './js/framegrab.js';
+import { WorldSource } from './js/worldsource.js';
+import { SlashSwarm } from './js/slash.js';
+import { Aura } from './js/aura.js';
+import { Voices } from './js/voices.js';
+import { Player, PLAYER, Score } from './js/player.js';
+import { Population, MOOD } from './js/population.js';
+
+const Q = new URLSearchParams(location.search);
+const CYCLE_MS = Math.max(5000, parseInt(Q.get('cycle') || '30000', 10));
+const DELAY = Q.get('delay') || '';
+const JITTER = Q.get('jitter') || '';
+// The real pipeline budgets 25 s per world (NVIDIA 503 storms are retried
+// inside that; measured worst case 24.2 s) and the Pi proxy waits 32 s, so
+// the abort here sits above both. A late world is handled by INCOMING, never
+// by cutting off a fetch that is about to land.
+const FETCH_TIMEOUT_MS = 40000;
+// Stage 4: the camera frame that becomes the next world. ?noframe=1 keeps the
+// canned GET path (for A/B on fps); ?grabw=N sets the JPEG width; ?flip=0 if
+// the frame the Pi keeps at /last-frame.jpg comes out upside down.
+const NOFRAME = Q.get('noframe') === '1';
+const GRAB_W = Math.max(160, Math.min(1920, parseInt(Q.get('grabw') || '800', 10)));
+const FLIP = Q.get('flip') !== '0';
+// Performance knobs, re-judgeable on the floor without a deploy. The
+// defaults trade pixels the sprite art does not need for frames this phone
+// very much does.
+const AA = Q.get('aa') === '1';                                   // MSAA off by default
+const FB_SCALE = Math.max(0.5, Math.min(1.5, parseFloat(Q.get('fb') || '0.8')));
+const TARGET_HZ = Math.max(30, Math.min(120, parseInt(Q.get('hz') || '60', 10)));
+// Floor-ring accents per biome; the pipeline's worlds carry no colour.
+const ACCENT = { lab: '#4fd6ff', rocky: '#9a8c7a', cave: '#6d5f8c', desert: '#e0b050',
+                 forest: '#3fa35a', meadow: '#7bd44f', snow: '#dfe9f2', water: '#3fa0d8',
+                 street: '#8a8f98', farm: '#c9a227' };
+const RING = { radius: 3.6, jitter: 0.45 };
+// Mobs stop this far away. Dial it in on site with ?stop=<metres>.
+if (Q.get('stop')) setStopDistance(Q.get('stop'));
+
+document.getElementById('opts').textContent =
+  `cycle ${(CYCLE_MS/1000)|0} s` + (DELAY ? ` · server delay ${DELAY} ms` : '') +
+  (JITTER ? ` · jitter ${JITTER} ms` : '');
+
+// No diagnostics on the headset: everything goes to the dashboard instead.
+// The Hud object is kept only for transient operator messages.
+const hud = new Hud('hud');
+// Commands queued by the dashboard come back on the reply to each telemetry
+// POST: TRIM and CALIBRATE now live there rather than on the headset.
+const tel = new Telemetry({ hz: 5, onCommands: cmds => { for (const c of cmds) applyCommand(c); } });
+const mic = new MicMeter({ peakWindowMs: 2000 });
+const micctl = document.getElementById('micctl');
+const calmsg = document.getElementById('calmsg');
+// The ESP32 handheld, over SSE from this same origin. Started at page load so
+// the first frames are in before AR begins. With no bridge (the Mac fallback
+// server) the link simply stays closed and every poll() is neutral: touch
+// input is untouched and nothing is shown.
+// staleMs 3000: the bridge itself reports a silent board after 2 s (neutral
+// input), so it normally speaks first; this timer is the backstop for a dead
+// SSE link and must not flicker on ordinary WiFi heartbeat jitter.
+const pad = new Controller({ log, warn, staleMs: 3000 });
+pad.start();
+// Three lamps on the handheld follow hostility: on change, at most 10 Hz.
+const leds = new LedMeter({ hz: 10, warn });
+// The lamps hold whatever they were last told, so a page that goes away
+// without saying anything leaves them lit. Say it on every way out: a clean
+// exit, a reload, a swipe to another app, a locked phone. The bridge has its
+// own watchdog for the ways that cannot say anything at all (a crash, a flat
+// battery, WiFi dropping).
+function lampsOff() { try { leds.off(); } catch (e) {} }
+for (const ev of ['pagehide', 'beforeunload', 'freeze']) window.addEventListener(ev, lampsOff);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') lampsOff();
+});
+const padEl = document.getElementById('pad');
+const padmsg = document.getElementById('padmsg');
+let padmsgTimer = 0;
+function flash(text, ms = 1400) {
+  padmsg.textContent = text; padmsg.classList.add('on');
+  clearTimeout(padmsgTimer);
+  padmsgTimer = setTimeout(() => padmsg.classList.remove('on'), ms);
+}
+// Tapping a control must not also fire the AR 'select' event.
+try {
+  document.getElementById('hud')
+    .addEventListener('beforexrselect', e => e.preventDefault());
+} catch (e) { /* older browsers: harmless */ }
+
+const sensVal = document.getElementById('sensval');
+const sensDots = document.getElementById('sensdots');
+for (let i = 0; i < PRESET_ORDER.length; i++) sensDots.appendChild(document.createElement('i'));
+function refreshSensButtons() {
+  sensVal.textContent = (PRESETS[mic.preset] || PRESETS.normal).label.toUpperCase();
+  const at = mic.presetIndex;
+  sensDots.querySelectorAll('i').forEach((d, i) => d.classList.toggle('on', i === at));
+}
+// One chip, one step per tap -- the same action as a press of the handheld's
+// button, so both controls behave identically and neither has to be held.
+document.getElementById('sens').addEventListener('click', () => {
+  mic.cyclePreset(1); refreshSensButtons(); flash('SENS ' + mic.preset.toUpperCase());
+});
+document.getElementById('calibrate').addEventListener('click', startCalibration);
+async function startCalibration() {
+  const btn = document.getElementById('calibrate');
+  if (mic.calibrating) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  calmsg.classList.add('on');
+  calmsg.textContent = 'CALIBRATING — STAY QUIET';
+  try {
+    const res = await mic.calibrate(3000, left => {
+      const secs = (left / 1000).toFixed(1);
+      calmsg.textContent = `CALIBRATING — STAY QUIET  ${secs}s`;
+      btn.textContent = secs + 's';          // feedback where the finger is
+    });
+    if (res.ok) {
+      calmsg.textContent = `CALIBRATED  floor ${res.floor.toFixed(1)}  ceiling ` +
+        `${res.ceiling.toFixed(1)} dBFS` + (res.cappedCeiling ? '  (ceiling capped)' : '') +
+        (res.persisted ? '' : '  (not saved)');
+      log('calibrated:', JSON.stringify(res));
+    } else {
+      calmsg.textContent = 'CALIBRATION FAILED: ' + res.reason;
+      warn('calibration failed:', res.reason);
+    }
+  } catch (e) {
+    calmsg.textContent = 'CALIBRATION ERROR';
+    warn('calibrate threw (ignored):', e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'CAL';
+    setTimeout(() => calmsg.classList.remove('on'), 4000);
+  }
+}
+refreshSensButtons();
+function applyCommand(c) {
+  try {
+    if (!c || typeof c !== 'object') return;
+    if (c.cmd === 'trim') {
+      mic.setFineDb(mic.fineDb + Number(c.db || 0));
+      flash(`TRIM ${mic.fineDb > 0 ? '+' : ''}${mic.fineDb} dB`);
+    } else if (c.cmd === 'preset') {
+      if (PRESETS[c.preset]) { mic.setPreset(c.preset); refreshSensButtons(); flash('SENS ' + c.preset.toUpperCase()); }
+    } else if (c.cmd === 'calibrate') {
+      startCalibration();
+    } else if (c.cmd === 'resetcal') {
+      mic.resetCal(); refreshSensButtons(); flash('CAL RESET');
+    }
+    log('command from dashboard:', JSON.stringify(c));
+  } catch (e) { warn('command failed (ignored):', e); }
+}
+// Three hearts, and five seconds of mercy after a hit.
+const player = new Player();
+// Who is in the room follows how loud it is.
+const pop = new Population();
+// ?mood=hostile|calm pins the room and stops it listening: the hostile half
+// can be shown in a quiet corridor and the calm half in a loud hall.
+if (Q.get('mood')) {
+  pop.pin(Q.get('mood'));
+  const el = document.getElementById('pinned');
+  if (pop.pinned) {
+    el.textContent = `ROOM PINNED ${pop.pinned.toUpperCase()} — NOT LISTENING`;
+    el.classList.add('on');
+    warn('the room is pinned to', pop.pinned, '- the microphone will not change it');
+  }
+}
+const score = new Score();
+const statusEl = document.getElementById('status');
+const heartsEl = document.getElementById('hearts');
+const scoreEl = document.getElementById('score');
+let scorePopTimer = 0;
+function renderScore(up) {
+  scoreEl.textContent = score.text;
+  if (!up) return;
+  scoreEl.classList.remove('up');
+  void scoreEl.offsetWidth;                  // restart the animation
+  scoreEl.classList.add('up');
+  clearTimeout(scorePopTimer);
+  scorePopTimer = setTimeout(() => scoreEl.classList.remove('up'), 300);
+}
+const hurtEl = document.getElementById('hurt');
+const scanHint = document.getElementById('scanhint');
+const HEART = (full) => `<svg viewBox="0 0 11 10" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg"><path fill="${full ? '#e23b3b' : '#3a2020'}" d="M2 0h2v1h1v1h1V1h1V0h2v1h1v3h-1v1h-1v1h-1v1h-1v1H5v1H4V8H3V7H2V6H1V5H0V1h1z"/></svg>`;
+function renderHearts() {
+  let h = '';
+  for (let i = 0; i < player.maxHearts; i++) h += HEART(i < player.hearts);
+  heartsEl.innerHTML = h;
+}
+renderHearts();
+renderScore(false);
+const fps = new Fps();
+const clockEl = document.getElementById('clock');
+const worldEl = document.getElementById('world');
+
+// The session inherits the page's orientation, so ENTER AR is only offered in
+// landscape. ?anyorient=1 overrides it if a device ever misreports.
+const ANY_ORIENT = Q.get('anyorient') === '1';
+function checkOrientation() {
+  const portrait = !ANY_ORIENT && window.innerHeight > window.innerWidth;
+  document.body.classList.toggle('portrait', portrait);
+  return !portrait;
+}
+addEventListener('resize', checkOrientation);
+addEventListener('orientationchange', () => setTimeout(checkOrientation, 120));
+checkOrientation();
+
+document.getElementById('enter').addEventListener('click', run);
+
+async function run() {
+  const btn = document.getElementById('enter');
+  btn.disabled = true; btn.textContent = 'STARTING…';
+  document.getElementById('err').textContent = '';   // a retry starts clean
+  // Kick the mic off FIRST, without awaiting: getUserMedia and the
+  // AudioContext resume must happen inside this same user gesture, not lazily
+  // later. The AR session request follows immediately in the same task.
+  // Textures are loaded ONCE here, before any spawn, so a world swap never
+  // pays for image decoding and the zero-cost swap guarantee holds.
+  const spritesPromise = Promise.all([preloadSprites(), preloadWeapons()])
+    .then(([m]) => log('sprites loaded:', Object.keys(m.sprites).length,
+                       'weapons:', Object.keys(m.weapons || {}).length))
+    .catch(e => warn('sprite preload failed (mobs will be untextured):', e));
+
+  const micPromise = mic.start().then(st => {
+    log('mic after start():', st, mic.error || '');
+    return st;
+  });
+
+  let session;
+  try {
+    session = await startAR({ overlayRoot: document.getElementById('hud') });
+  } catch (e) {
+    document.getElementById('err').textContent = String(e);
+    btn.disabled = false; btn.textContent = 'ENTER AR'; return;
+  }
+  document.body.classList.remove('launch');
+  for (const id of ['hud','clock','world']) document.getElementById(id).classList.add('on');
+  micctl.classList.add('on');
+  statusEl.classList.add('on');
+  player.reset(performance.now(), 3000);      // 3 s to look around before anything bites
+  score.reset();
+  renderHearts();
+  renderScore(false);
+
+  const renderer = makeRenderer(session, { antialias: AA, fbScale: FB_SCALE });
+  const { scene, camera } = basicScene();
+  const weapon = new Weapon(scene);
+  // A swing no longer touches anything by itself: it throws a slash that flies
+  // out and damages whatever it reaches.
+  const slashes = new SlashSwarm(scene);
+  // Green motes over anything peaceful, so 'this one will not hurt you'
+  // reads across the room.
+  const aura = new Aura(scene);
+  // The mobs talk: Nemotron wrote the lines for this biome, ElevenLabs
+  // says them, and the microphone is deafened while they do so the game
+  // cannot hear its own voice and call it hostility.
+  const voices = new Voices({ mic, log, warn });
+  const bubbleEl = document.getElementById('bubble');
+  const bubbleV = new THREE.Vector3();
+  let pendingSlashes = 0;
+  await renderer.xr.setSession(session);
+  const gotHz = requestFrameRate(session, TARGET_HZ);
+  // Camera frame -> JPEG -> POST /world. The texture only exists inside the
+  // frame callback, so the grab runs from the render loop (worldSrc.tick).
+  const gl = renderer.getContext();
+  const camSrc = NOFRAME ? null : new CameraFrameSource(session, gl);
+  // The camera image hangs off the frame's views, and views need a viewer
+  // pose. Against local-floor that pose is null until ARCore has tracked
+  // (a phone lying still never gets one); against the 'viewer' space it
+  // always exists, so the frame can be grabbed before tracking is up.
+  let viewerSpace = null;
+  try { viewerSpace = await session.requestReferenceSpace('viewer'); }
+  catch (e) { warn('viewer reference space unavailable:', e); }
+  const grabber = new FrameGrabber(gl, { maxWidth: GRAB_W, flipY: FLIP });
+  if (!NOFRAME) { grabber.warm(886, 1920); renderer.resetState(); }   // compile now, not mid-countdown
+  const worldSrc = new WorldSource({ timeoutMs: FETCH_TIMEOUT_MS, log, warn });
+  function grabFromFrame(frame) {
+    if (!frame || !camSrc) return null;
+    const rs = viewerSpace || renderer.xr.getReferenceSpace();
+    if (!rs) return null;
+    const cam = camSrc.tryGet(frame, rs);
+    if (!cam) return null;                       // first ~40 frames: expected
+    let g;
+    try { g = grabber.grab(cam.texture, cam.width, cam.height); capturedThisFrame = true; }
+    finally { renderer.resetState(); }          // three re-syncs its GL cache
+    return { blob: grabber.encode(), ms: g.ms };
+  }
+  await spritesPromise;                 // never spawn before textures exist
+  try {
+    weapon.setBiome(null);              // fallback weapon until the first world
+    log('weapon ready:', weapon.name);
+  } catch (e) {
+    warn('WEAPON INIT FAILED:', e);
+    weaponInitError = String(e && e.message || e);
+  }
+  // Tap anywhere that is not a control to swing. beforexrselect on the overlay
+  // stops the mic buttons from also triggering a swing.
+  for (const ev of ['select', 'selectstart', 'selectend']) {
+    session.addEventListener(ev, () => {
+      selectEvents++;
+      if (ev !== 'select') return;
+      try {
+        if (weapon.swing(performance.now())) {
+          // The camera matrix only exists in the render loop, so the throw is
+          // latched here and launched there.
+          pendingSlashes = Math.min(pendingSlashes + 1, 4);
+          log('swing', weapon.swings, weapon.name);
+        }
+      } catch (e) { warn('swing failed (ignored):', e); swingError = String(e); }
+    });
+  }
+  // Fallback: some setups deliver a DOM touch but no XR select. A pointer on
+  // the canvas swings too, so the weapon is never dead.
+  window.addEventListener('pointerdown', (e) => {
+    domPointers++;
+    if (e.target && e.target.closest && e.target.closest('#micctl')) return;
+    try { if (weapon.swing(performance.now())) pendingSlashes = Math.min(pendingSlashes + 1, 4); }
+    catch (err) { warn('swing:', err); }
+  }, { passive: true });
+  session.addEventListener('end', onEnd);
+
+  // Explicitly re-check the mic AFTER the immersive session is live: ARCore
+  // holds the camera, and we want to know for certain whether it also takes
+  // the audio input with it.
+  let micStateAtEntry = null, micStateAfterSession = null;
+  micPromise.then(st => {
+    micStateAtEntry = st;
+    setTimeout(() => {
+      micStateAfterSession = mic.state;
+      const survived = mic.state === MIC.LIVE;
+      log('MIC DURING IMMERSIVE-AR:', survived ? 'ALIVE' : 'DEAD',
+          '| at entry:', micStateAtEntry, '| now:', mic.state,
+          '| ctx:', mic.ctx ? mic.ctx.state : 'none',
+          '| track:', mic.track ? mic.track.readyState : 'none');
+      postResult('mic', {
+        stateAtEntry: micStateAtEntry, stateDuringSession: mic.state,
+        survivedSessionEntry: survived, error: mic.error,
+        audioContext: mic.ctx ? mic.ctx.state : null,
+        track: mic.track ? mic.track.readyState : null,
+        trackMuted: mic.track ? mic.track.muted : null,
+        floor: mic.floor, ceiling: mic.ceiling, preset: mic.preset, fineDb: mic.fineDb,
+      });
+    }, 1500);
+  });
+
+  const playerPos = new THREE.Vector3();
+  let mobs = [];
+  let disposeQueue = [];
+  let weaponInitError = null, selectEvents = 0, domPointers = 0, swingError = null;
+  let seq = 0, lastFetchMs = 0, maxFrameMs = 0, lastT = 0, lastPost = 0, started = false;
+  let trackingOk = false, nearest = 99, arrived = 0;
+  let target = -1, padSwings = 0, kills = 0, throws = 0, moodChanges = 0;
+  // Stalls are the headline complaint, so they are measured rather than
+  // guessed at: any frame over this long is recorded WITH what was happening,
+  // and the worst few survive to the dashboard. That is the difference
+  // between "it freezes sometimes" and knowing which of ARCore, the capture
+  // or our own loop did it.
+  const STALL_MS = 120;
+  const stalls = [];
+  let stallCount = 0, stallMsTotal = 0, capturedThisFrame = false;
+  function noteStall(ms, t) {
+    stallCount++; stallMsTotal += ms;
+    const rec = { atS: +(t / 1000).toFixed(1), ms: Math.round(ms),
+                  tracking: trackingOk, mobs: mobs.length, slashes: slashes.live.length,
+                  captured: capturedThisFrame, fetching: worldSrc.stats().pending,
+                  swapping: cycle.awaiting, fps: fps.value };
+    stalls.push(rec);
+    stalls.sort((a, b) => b.ms - a.ms);
+    if (stalls.length > 6) stalls.length = 6;
+  }
+  let trackLostAt = 0, trackLosses = 0, trackLostMs = 0, worstLossMs = 0;
+  const trackEl = document.getElementById('tracklost');
+  function updateTracking(now) {
+    if (!trackingOk && !trackLostAt) { trackLostAt = now; trackLosses++; }
+    else if (trackingOk && trackLostAt) {
+      const d = now - trackLostAt;
+      trackLostMs += d;
+      if (d > worstLossMs) worstLossMs = d;
+      trackLostAt = 0;
+    }
+    // Only after a moment: a single dropped pose is normal and a message that
+    // flickers on every one of them is worse than none.
+    trackEl.classList.toggle('on', trackLostAt > 0 && (now - trackLostAt) > 450);
+  }
+
+  // Handheld mapping. The stick has no locomotion job (the player walks):
+  //   atk  -> swing (same call as a tap)      sens -> mic preset (2048/4095)
+  //   sw   -> next world now, no countdown    x flick -> cycle the target ring
+  function handlePad(p, t) {
+    try {
+      if (p.restored) { padEl.classList.add('on'); log('controller live, sens', p.sens); }
+      if (p.dropped)  { padEl.classList.remove('on'); log('controller gone; touch only'); }
+      if (!p.connected) return;
+      // A PRESS steps one preset and stays there. The button is momentary, so
+      // following its level would mean holding it down to stay sensitive.
+      if (p.sensPressed) {
+        mic.cyclePreset(1);
+        refreshSensButtons();
+        flash('SENS ' + mic.preset.toUpperCase());
+      }
+      if (p.atkPressed) {
+        padSwings++;
+        if (weapon.swing(performance.now())) {
+          pendingSlashes = Math.min(pendingSlashes + 1, 4);
+          log('swing (pad)', weapon.swings, weapon.name);
+        }
+      }
+      // The stick button takes the snapshot the next world is built from --
+      // but only once the cooldown has run out. Pressing early does nothing.
+      if (p.swPressed && started) takeSnapshot(t);
+      if (p.xFlick) cycleTarget(p.xFlick);
+    } catch (e) { warn('pad input (ignored):', e); }
+  }
+  function takeSnapshot(t) {
+    if (!cycle.manual) { cycle.skip(t); flash('NEXT WORLD'); return; }
+    if (cycle.trigger(t)) {
+      score.snapshot();
+      renderScore(true);
+      flash('SNAPSHOT \u2014 READING THE ROOM');
+      clockEl.classList.add('incoming');
+    } else {
+      const left = Math.ceil((cycle.remaining(t) || 0) / 1000);
+      flash(`COOLING DOWN \u2014 ${left}s`);
+    }
+  }
+
+  /**
+   * Put the speech bubble over the speaker by projecting their head into
+   * screen space. Hidden when they are behind you or off the edge -- a line
+   * pinned to the side of the screen belongs to nobody.
+   */
+  function drawBubble(saying, xrCam) {
+    try {
+      if (!saying || !saying.mob || !saying.mob.group || saying.mob.dead) {
+        bubbleEl.classList.remove('on');
+        return;
+      }
+      const g = saying.mob.group;
+      const h = (g.userData && g.userData.height) || 1.7;
+      bubbleV.set(g.position.x, (g.position.y || 0) + h * 1.02, g.position.z);
+      bubbleV.project(xrCam);
+      if (bubbleV.z > 1 || bubbleV.x < -1.2 || bubbleV.x > 1.2 || bubbleV.y < -1.2 || bubbleV.y > 1.4) {
+        bubbleEl.classList.remove('on');
+        return;
+      }
+      const x = (bubbleV.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (-bubbleV.y * 0.5 + 0.5) * window.innerHeight;
+      if (bubbleEl.dataset.line !== saying.text) {
+        bubbleEl.dataset.line = saying.text;
+        // A line with no audio still gets said, and says why.
+        bubbleEl.innerHTML = saying.text.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) +
+          (saying.spoken ? '' : '<span class="mute">(no voice: ' +
+            String(voices.lastError || 'audio unavailable').slice(0, 48) + ')</span>') +
+          '<i class="tail"></i>';
+        bubbleEl.classList.toggle('calm', saying.role === 'calm');
+        bubbleEl.classList.toggle('hostile', saying.role !== 'calm');
+      }
+      bubbleEl.style.left = Math.round(x) + 'px';
+      bubbleEl.style.top = Math.round(Math.max(44, y)) + 'px';
+      bubbleEl.classList.add('on');
+    } catch (e) { bubbleEl.classList.remove('on'); }
+  }
+
+  function cycleTarget(dir) {
+    if (!mobs.length) { target = -1; return; }
+    if (target >= 0 && mobs[target]) mobs[target].setTargeted(false);
+    target = target < 0 ? (dir > 0 ? 0 : mobs.length - 1)
+                        : (target + dir + mobs.length) % mobs.length;
+    mobs[target].setTargeted(true);
+    flash(`TARGET ${target + 1}/${mobs.length} \u00b7 ${mobs[target].kind}`);
+  }
+
+  function worldParams() {
+    const p = { seq: ++seq };
+    if (DELAY) p.delay = DELAY;
+    if (JITTER) p.jitter = JITTER;
+    return p;
+  }
+
+  const cycle = new WorldCycle({
+    cycleMs: CYCLE_MS,
+    // The clock is a COOLDOWN on taking a snapshot of the room, not a
+    // metronome: at zero it waits, and the world only changes when the stick
+    // button is pressed. ?auto=1 restores the old self-running cycle.
+    manual: Q.get('auto') !== '1',
+    log, warn,
+    // Fetch happens while the clock runs. A failure is caught by WorldCycle,
+    // which keeps the current world and retries -- the frame loop never sees it.
+    // The request is parked until a camera frame can be grabbed (worldSrc.tick
+    // in the render loop), POSTed as JPEG, and falls back to the canned GET on
+    // any failure. It is issued at the START of the countdown so the model's
+    // latency is hidden behind the full window.
+    fetchWorld: () => worldSrc.request(worldParams()).then(w => {
+      lastFetchMs = worldSrc.lastFetchMs;
+      if (!w.accent) w.accent = ACCENT[w.biome] || '#8a8f98';
+      return w;
+    }),
+    // Geometry is BUILT here, during the countdown, hidden. The swap frame
+    // therefore does no construction.
+    prepare: (w) => spawnRing(scene, 0, 0, {
+      count: Math.max(1, Math.round((w.count_scale || 1) * 5)),
+      radius: RING.radius, jitter: RING.jitter,
+      speedScale: w.speed_scale,
+      accent: w.accent, visible: false, biome: w.biome,
+      hpBonus: w.hp_bonus, mood: pop.mood,
+      // Nothing peaceful is ever a brute, whatever the world asks for.
+      bruteBias: pop.mood === MOOD.CALM ? 0 : w.brute_bias,
+    }),
+    // Reposition + visibility toggle only; disposal is deferred a frame at a time.
+    swap: (prepared, world, late) => {
+      const old = mobs;
+      mobs = prepared || [];
+      target = -1;
+      placeRing(mobs, playerPos.x, playerPos.z, RING);
+      for (const m of mobs) m.group.visible = true;
+      for (const m of old) { m.group.visible = false; disposeQueue.push(m); }
+      clockEl.classList.remove('incoming');
+      try { weapon.setBiome(world.biome); } catch (e) { warn('weapon swap:', e); }
+      const barks = world && world.barks ? Object.values(world.barks).flat() : [];
+      worldEl.innerHTML = `${world.biome.toUpperCase()} · ${world.name}` +
+        `<small>${barks.length ? '“' + barks[Math.floor(Math.random()*barks.length)] + '”' : ''}</small>`;
+      log('SWAP ->', world.biome, world.name, late ? '(late)' : '(on time)');
+    },
+  });
+
+
+
+  // Diagnostics handle. Nothing in the game reads it and nothing is drawn for
+  // it; it exists so the session can be driven and inspected from
+  // chrome://inspect (or CDP over adb) without a controller in hand -- the
+  // real ESP32 reclaims the bridge within a second, so a fake one cannot hold
+  // the link long enough to script a sequence.
+  window.__jz = {
+    get mobs() { return mobs; }, get target() { return target; },
+    slashes, weapon, mic, pad, leds, cycle, worldSrc, grabber, player, pop, score, aura, voices,
+    session, camMatrix: () => Array.from(renderer.xr.getCamera().matrixWorld.elements),
+    frameRates: () => Array.from(session.supportedFrameRates || []),
+    perf: () => ({ fps: fps.value, worstFrameMs: +maxFrameMs.toFixed(1), hz: gotHz,
+                   fbScale: FB_SCALE, aa: AA, stalls: stallCount, worst: stalls,
+                   trackLosses, trackLostMs: Math.round(trackLostMs), worstLossMs: Math.round(worstLossMs) }),
+    snapshot: () => takeSnapshot(performance.now()),
+    cycleTarget: (d = 1) => { cycleTarget(d); return target; },
+    throwSlash: () => { pendingSlashes = Math.min(pendingSlashes + 1, 4); return weapon.swing(performance.now()); },
+    stats: () => ({ mobs: mobs.length, hp: mobs.map(m => m.hp), target,
+                    moods: mobs.map(m => (m.leaving ? 'x' : m.mood[0])).join(''),
+                    slash: slashes.stats(), kills, preset: mic.preset, fineDb: mic.fineDb,
+                    hearts: player.hearts, immune: player.immune(performance.now()),
+                    score: score.value,
+                    room: pop.status(), cooldown: { ready: cycle.ready, snapshots: cycle.snapshots,
+                    remainingMs: Math.round(cycle.remaining(performance.now()) ?? -1) } }),
+  };
+
+  // Telemetry is pushed BEFORE any early return. The dashboard must keep
+  // reporting when tracking is lost or a frame is missing -- that is precisely
+  // when someone is staring at it wondering what broke.
+  function pushTelemetry(t, micLive) {
+    // The object below is a page of work to assemble; at 90 fps for a 5 Hz
+    // send that is eighteen thrown away for every one used.
+    if (!tel.due(t)) return;
+    try {
+      tel.push(t, {
+          t: Math.round(t),
+          mic: {
+            state: mic.state, live: micLive, error: mic.error,
+            db: micLive ? +mic.db.toFixed(1) : null,
+            peak: micLive ? +mic.peak.toFixed(1) : null,
+            hostility: micLive ? +mic.hostility.toFixed(3) : null,
+            preset: mic.preset, fineDb: mic.fineDb, presets: PRESET_ORDER,
+            floor: +mic.floor.toFixed(1), ceiling: +mic.ceiling.toFixed(1),
+            calibrating: mic.calibrating,
+            suppressed: mic.suppressed, suppressedFrames: mic.suppressedFrames,
+            calRemainingMs: Math.round(mic.calRemainingMs || 0),
+            calibratedAt: mic.calibratedAt,
+          },
+          session: {
+            tracking: trackingOk, fps: fps.value,
+            worstFrameMs: +maxFrameMs.toFixed(1),
+            playerY: +playerPos.y.toFixed(2),
+            hz: gotHz, fbScale: FB_SCALE, aa: AA,
+            stalls: stallCount, stallMs: Math.round(stallMsTotal), worst: stalls,
+            trackLosses, trackLostMs: Math.round(trackLostMs),
+            worstLossMs: Math.round(worstLossMs),
+            lostNow: trackLostAt ? Math.round(performance.now() - trackLostAt) : 0,
+          },
+          world: cycle.current ? { biome: cycle.current.biome, name: cycle.current.name,
+                                   accent: cycle.current.accent, source: cycle.current.source,
+                                   via: cycle.current.via, fallback: cycle.current.fallback,
+                                   reason: cycle.current.reason,
+                                   caption: String(cycle.current.caption || '').slice(0, 200) } : null,
+          capture: Object.assign(grabber.stats(), worldSrc.stats(),
+            { enabled: !NOFRAME, camHits: camSrc ? camSrc.hits : null, camMisses: camSrc ? camSrc.misses : null,
+              camMiss: camSrc ? camSrc.lastMiss : 'disabled', camSize: camSrc && camSrc.lastSize }),
+          cycle: {
+            swaps: cycle.swaps, lateSwaps: cycle.lateSwaps, awaiting: cycle.awaiting,
+            remainingMs: started ? Math.round(cycle.remaining(t) ?? 0) : null,
+            cycleMs: CYCLE_MS,
+            lastSwapMs: +cycle.lastSwapMs.toFixed(2), maxSwapMs: +cycle.maxSwapMs.toFixed(2),
+            ready: cycle.prepared, fetching: cycle.fetching,
+            manual: cycle.manual, cooldownReady: cycle.ready,
+            snapshots: cycle.snapshots, earlyPresses: cycle.earlyPresses,
+            lastFetchMs, fails: cycle.fails, lastError: cycle.lastError,
+            skips: cycle.skips,
+          },
+          mobs: { count: mobs.length, arrived, nearest: mobs.length ? +nearest.toFixed(2) : null,
+                stopDistance: STOP_DISTANCE, kills,
+                hp: mobs.map(m => m.hp), dying: mobs.filter(m => m.dying).length },
+          slash: Object.assign(slashes.stats(), { thrownFromLoop: throws }),
+          aura: aura.stats(),
+          voices: voices.status(),
+          player: Object.assign(player.status(performance.now()), { score: score.status() }),
+          room: Object.assign(pop.status(), { changes: moodChanges,
+                 calm: mobs.filter(m => m.mood === 'calm' && !m.leaving).length,
+                 hostile: mobs.filter(m => m.mood !== 'calm' && !m.leaving).length,
+                 leaving: mobs.filter(m => m.leaving).length }),
+        weapon: { name: weapon.name, swings: weapon.swings,
+                  swinging: weapon.swinging(performance.now()),
+                  error: weaponInitError || swingError,
+                  selectEvents, domPointers, padSwings, dbg: weapon.debug() },
+          controller: pad.status(performance.now()),
+          leds: leds.status(),
+          target: target >= 0 ? target + 1 : null,
+          telemetry: { sent: tel.sent, failed: tel.failed },
+        });
+    } catch (e) { /* telemetry must never cost a frame */ }
+  }
+
+  renderer.setAnimationLoop((t, frame) => {
+    const frameStart = performance.now();
+    capturedThisFrame = false;
+    try {
+      const f = fps.tick(t);
+
+      // Metering runs every frame regardless of tracking: a lost pose must not
+      // make the mic look dead, and vice versa.
+      mic.sample(t);
+      const micLive = mic.state === MIC.LIVE;
+      // Handheld before any early return: a swing, a preset flip or a skip
+      // must work while tracking is lost, exactly like the touch fallback.
+      const padIn = pad.poll(performance.now());
+      handlePad(padIn, t);
+      leds.update(performance.now(), micLive ? mic.hostility : 0, padIn.connected);
+      // Grab-and-post for the pending world, once per countdown, before the
+      // early returns so the camera-not-ready timeout still runs.
+      worldSrc.tick(performance.now(), () => grabFromFrame(frame));
+      pushTelemetry(t, micLive);
+
+
+      if (!frame) { trackingOk = false; renderer.render(scene, camera); return; }
+      const refSpace = renderer.xr.getReferenceSpace();
+      if (!refSpace) { trackingOk = false; renderer.render(scene, camera); return; }
+      const pose = frame.getViewerPose(refSpace);
+      trackingOk = !!pose;                    // was never set true before (telemetry bug)
+      const xrCam = renderer.xr.getCamera();
+      playerPos.setFromMatrixPosition(xrCam.matrixWorld);
+      // Placed from the tracked camera. If tracking drops the mesh keeps its
+      // last good transform rather than snapping to the world origin.
+      weapon.update(performance.now(), xrCam.matrixWorld);
+      const dt = lastT ? Math.min((t - lastT) / 1000, 0.1) : 0;
+      lastT = t;
+
+      if (!started && t > 1200) { started = true; cycle.start(t); }
+      if (started) cycle.tick(t);
+
+      const rem = started ? cycle.remaining(t) : null;
+      if (cycle.awaiting) clockEl.classList.add('incoming');
+      const wasReady = clockEl.classList.contains('ready');
+      clockEl.classList.toggle('ready', !!cycle.ready && !cycle.awaiting);
+      scanHint.classList.toggle('on', !!cycle.ready && !cycle.awaiting);
+      scanHint.textContent = 'press the stick button to scan the room';
+      clockEl.textContent = !started ? '…'
+        : (rem === null ? 'SCANNING…'
+        : (cycle.ready ? 'SCAN READY' : String(Math.ceil(rem / 1000))));
+
+      // Launch anything the input latched, now that the camera matrix is known.
+      while (pendingSlashes > 0) {
+        pendingSlashes--;
+        // Thrown AT something: the cycled target if there is one, else the
+        // nearest mob in the forward cone.
+        const mark = (target >= 0 && mobs[target]) ? mobs[target] : null;
+        if (slashes.spawnFromCamera(xrCam.matrixWorld, mobs, mark)) throws++;
+      }
+
+      // Quiet empties the room of anything hostile and fills it with company;
+      // noise sends the company away again. Both happen by WALKING, not by
+      // popping, so you can see it happen.
+      const moodNow = pop.update(dt * 1000, micLive ? mic.hostility : 0);
+      if (moodNow) {
+        const w0 = cycle.current || {};
+        let leaving = 0;
+        for (const m of mobs) if (m.mood !== moodNow && m.leave()) leaving++;
+        const incoming = spawnRing(scene, playerPos.x, playerPos.z, {
+          count: Math.max(2, Math.round((w0.count_scale || 1) * (moodNow === MOOD.CALM ? 3 : 5))),
+          radius: RING.radius * 1.7, jitter: RING.jitter,
+          speedScale: w0.speed_scale, bruteBias: moodNow === MOOD.CALM ? 0 : w0.brute_bias,
+          accent: w0.accent, biome: w0.biome, hpBonus: w0.hp_bonus, mood: moodNow,
+        });
+        mobs = mobs.concat(incoming);
+        moodChanges++;
+        flash(moodNow === MOOD.CALM ? 'THE ROOM GOES QUIET' : 'SOMETHING HEARD YOU', 2200);
+        log('mood ->', moodNow, '| leaving', leaving, '| arriving', incoming.length);
+      }
+
+      nearest = 99; arrived = 0;
+      const nowMs = performance.now();
+      for (const m of mobs) {
+        m.step(dt, playerPos.x, playerPos.z, t, mobs);
+        if (m.dying || m.leaving) continue;         // not a threat any more
+        if (m.distance < nearest) nearest = m.distance;
+        if (m.arrived) arrived++;
+        // Close enough, hostile, off cooldown: that is a hit, unless the
+        // player is still inside the mercy window from the last one.
+        if (m.attack(nowMs)) {
+          const r = player.damage(nowMs);
+          if (r.hit) {
+            score.hit();
+            renderHearts();
+            renderScore(false);
+            flash(r.overrun ? 'OVERRUN' : 'HIT', r.overrun ? 2600 : 900);
+            log(r.overrun ? 'OVERRUN' : 'hit', '| hearts', r.hearts);
+            if (r.overrun) for (const other of mobs) other.leave();   // the field clears
+          }
+        }
+      }
+      if (player.tick(nowMs)) { renderHearts(); flash('BACK ON YOUR FEET', 1800); }
+      statusEl.classList.toggle('immune', player.immune(nowMs) && player.alive);
+      hurtEl.style.opacity = String(player.flash(nowMs).toFixed(3));
+      aura.update(dt, mobs);
+      // Someone says something, and the line follows their head.
+      const saying = voices.update(performance.now(), mobs, cycle.current);
+      drawBubble(saying, xrCam);
+      const sl = slashes.update(dt, mobs, playerPos.x, playerPos.z);
+      if (sl.kills) {
+        kills += sl.kills;
+        for (const kind of sl.killed) score.kill(kind);
+        renderScore(true);
+      }
+      // Reap the dead into the same one-per-frame disposal queue the world swap
+      // uses, so a wipe never disposes a dozen meshes in one frame.
+      for (let i = mobs.length - 1; i >= 0; i--) {
+        if (!mobs[i].dead) continue;
+        const gone = mobs.splice(i, 1)[0];
+        gone.group.visible = false;
+        disposeQueue.push(gone);
+        if (target === i) target = -1; else if (target > i) target--;
+      }
+      if (disposeQueue.length) {
+        const m = disposeQueue.shift();
+        try { m.dispose(scene); } catch (e) { warn('dispose:', e); }
+      }
+
+      const w = cycle.current;
+
+      renderer.render(scene, camera);
+
+
+
+      if (started && t - lastPost > 5000) {
+        lastPost = t;
+        postResult('stage3', {
+          stage:3, cycleMs:CYCLE_MS, serverDelay:DELAY || 0,
+          world: w && { biome:w.biome, name:w.name },
+          swaps:cycle.swaps, lateSwaps:cycle.lateSwaps, awaiting:cycle.awaiting,
+          lastSwapMs:+cycle.lastSwapMs.toFixed(3), maxSwapMs:+cycle.maxSwapMs.toFixed(3),
+          maxFrameMs:+maxFrameMs.toFixed(2), lastFetchMs,
+          fetchFails:cycle.fails, lastError:cycle.lastError,
+          mobs:mobs.length, fps:fps.value, prefetchReady:cycle.ready,
+        });
+      }
+    } catch (e) {
+      warn('frame error (ignored):', e);
+    } finally {
+      const ms = performance.now() - frameStart;
+      if (ms > maxFrameMs) maxFrameMs = ms;
+      if (ms > STALL_MS) noteStall(ms, t);
+      updateTracking(performance.now());
+    }
+  });
+
+  function onEnd() {
+    try {
+      renderer.setAnimationLoop(null);
+      try { mic.stop(); } catch (e) { warn('mic.stop:', e); }
+      try { weapon.dispose(); } catch (e) { warn('weapon.dispose:', e); }
+      try { leds.off(); } catch (e) {}
+      padmsg.classList.remove('on');
+      micctl.classList.remove('on');
+      calmsg.classList.remove('on');
+      statusEl.classList.remove('on');
+      scanHint.classList.remove('on');
+      hurtEl.style.opacity = '0';
+      try { slashes.dispose(); } catch (e) { warn('slash dispose:', e); }
+      try { aura.dispose(); } catch (e) { warn('aura dispose:', e); }
+      try { voices.clear(); } catch (e) { warn('voices clear:', e); }
+      bubbleEl.classList.remove('on');
+      for (const m of mobs.concat(disposeQueue)) { try { m.dispose(scene); } catch(e){} }
+      mobs = []; disposeQueue = [];
+      trackEl.classList.remove('on');
+      for (const id of ['hud','clock','world']) document.getElementById(id).classList.remove('on');
+      document.body.classList.add('launch');
+      btn.disabled = false; btn.textContent = 'ENTER AR';
+      checkOrientation();                 // landscape is still required to re-enter
+      document.getElementById('err').textContent =
+        `Last run: ${cycle.swaps} swaps (${cycle.lateSwaps} late), worst swap ` +
+        `${cycle.maxSwapMs.toFixed(2)} ms, worst frame ${maxFrameMs.toFixed(1)} ms, ` +
+        `${cycle.fails} fetch failures.`;
+      postResult('stage3', { stage:3, final:true, swaps:cycle.swaps,
+        lateSwaps:cycle.lateSwaps, maxSwapMs:cycle.maxSwapMs, maxFrameMs,
+        fetchFails:cycle.fails });
+    } catch (e) { warn('onEnd:', e); }
+  }
+}
+</script>
+</body></html>

@@ -1,0 +1,191 @@
+{
+  "license": "CC0 1.0 Universal (public domain) - Kenney.nl",
+  "pack": "Kenney Tiny Dungeon 1.0",
+  "url": "https://kenney.nl/assets/tiny-dungeon",
+  "sprites": {
+    "barbarian": {
+      "file": "barbarian.png",
+      "w": 16,
+      "h": 15,
+      "aspect": 1.0667,
+      "source": "kenney_tiny-dungeon/tile_0085.png"
+    },
+    "zombie": {
+      "file": "zombie.png",
+      "w": 16,
+      "h": 15,
+      "aspect": 1.0667,
+      "source": "kenney_tiny-dungeon/tile_0086.png"
+    },
+    "horned": {
+      "file": "horned.png",
+      "w": 16,
+      "h": 15,
+      "aspect": 1.0667,
+      "source": "kenney_tiny-dungeon/tile_0087.png"
+    },
+    "ape": {
+      "file": "ape.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0088.png"
+    },
+    "knight": {
+      "file": "knight.png",
+      "w": 16,
+      "h": 15,
+      "aspect": 1.0667,
+      "source": "kenney_tiny-dungeon/tile_0096.png"
+    },
+    "elder": {
+      "file": "elder.png",
+      "w": 16,
+      "h": 15,
+      "aspect": 1.0667,
+      "source": "kenney_tiny-dungeon/tile_0100.png"
+    },
+    "slime": {
+      "file": "slime.png",
+      "w": 14,
+      "h": 12,
+      "aspect": 1.1667,
+      "source": "kenney_tiny-dungeon/tile_0108.png"
+    },
+    "caveman": {
+      "file": "caveman.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0109.png"
+    },
+    "crab": {
+      "file": "crab.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0110.png"
+    },
+    "beast": {
+      "file": "beast.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0111.png"
+    },
+    "ranger": {
+      "file": "ranger.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0112.png"
+    },
+    "bat": {
+      "file": "bat.png",
+      "w": 16,
+      "h": 12,
+      "aspect": 1.3333,
+      "source": "kenney_tiny-dungeon/tile_0120.png"
+    },
+    "ghost": {
+      "file": "ghost.png",
+      "w": 16,
+      "h": 15,
+      "aspect": 1.0667,
+      "source": "kenney_tiny-dungeon/tile_0121.png"
+    },
+    "spider": {
+      "file": "spider.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0122.png"
+    },
+    "scorpion": {
+      "file": "scorpion.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0123.png"
+    },
+    "armored": {
+      "file": "armored.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0124.png"
+    }
+  },
+  "weapons": {
+    "staff_arc": {
+      "file": "w_staff_arc.png",
+      "w": 8,
+      "h": 16,
+      "aspect": 0.5,
+      "source": "kenney_tiny-dungeon/tile_0129.png"
+    },
+    "hammer": {
+      "file": "w_hammer.png",
+      "w": 12,
+      "h": 16,
+      "aspect": 0.75,
+      "source": "kenney_tiny-dungeon/tile_0117.png"
+    },
+    "torch": {
+      "file": "w_torch.png",
+      "w": 8,
+      "h": 13,
+      "aspect": 0.6154,
+      "source": "kenney_tiny-dungeon/tile_0125.png"
+    },
+    "pickaxe": {
+      "file": "w_pickaxe.png",
+      "w": 8,
+      "h": 16,
+      "aspect": 0.5,
+      "source": "kenney_tiny-dungeon/tile_0131.png"
+    },
+    "axe": {
+      "file": "w_axe.png",
+      "w": 11,
+      "h": 16,
+      "aspect": 0.6875,
+      "source": "kenney_tiny-dungeon/tile_0119.png"
+    },
+    "sword": {
+      "file": "w_sword.png",
+      "w": 8,
+      "h": 16,
+      "aspect": 0.5,
+      "source": "kenney_tiny-dungeon/tile_0104.png"
+    },
+    "staff_ice": {
+      "file": "w_staff_ice.png",
+      "w": 8,
+      "h": 16,
+      "aspect": 0.5,
+      "source": "kenney_tiny-dungeon/tile_0130.png"
+    },
+    "cleaver": {
+      "file": "w_cleaver.png",
+      "w": 8,
+      "h": 16,
+      "aspect": 0.5,
+      "source": "kenney_tiny-dungeon/tile_0105.png"
+    },
+    "bat": {
+      "file": "w_bat.png",
+      "w": 10,
+      "h": 16,
+      "aspect": 0.625,
+      "source": "kenney_tiny-dungeon/tile_0107.png"
+    },
+    "battleaxe": {
+      "file": "w_battleaxe.png",
+      "w": 16,
+      "h": 16,
+      "aspect": 1.0,
+      "source": "kenney_tiny-dungeon/tile_0118.png"
+    }
+  }
+}

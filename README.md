@@ -1,12 +1,64 @@
-# jen-zombie pipeline harness
+# jen-zombie pipeline
 
-Terminal-only test harness for the photo -> caption -> biome pipeline, plus a
-benchmark rig for choosing the model/config. Stdlib + Pillow, nothing else.
+The photo -> caption -> biome pipeline: as an HTTP service the game calls, as a
+terminal harness, and as a benchmark rig for choosing the model/config.
+Stdlib + Pillow, nothing else.
 
-    cp .env.example .env        # add NVIDIA_API_KEY
+    cp .env.example .env        # add NVIDIA_API_KEY and GEMINI_API_KEY
+    python3 server.py           # the service the game calls
     python3 pipeline.py         # random image every 30s, Ctrl-C for the tally
     python3 pipeline.py --once
     python3 pipeline.py --image images/water_beach_surf.jpg
+
+## The world service
+
+    python3 server.py                      # 0.0.0.0:8099
+    python3 server.py --port 8099 --budget 25
+
+`server.py` wraps `pipeline.py` without reimplementing it: the model calls, the
+retries, the water rule, the clamping and the jsonl logging all still live in
+`pipeline.py`. It ships with the measured configuration already applied
+(`JZ_VISION_PROVIDER=gemini`, `JZ_NEMOTRON_MODEL=nvidia/nemotron-3-super-120b-a12b`,
+`JZ_REASONING_EFFORT=none`); a real environment variable still overrides any of
+them.
+
+    POST /world    body: a JPEG, raw bytes, Content-Type: image/jpeg
+                   200:  {"name","biome","count_scale","speed_scale",
+                          "detect_scale","brute_bias","hp_bonus","barks",
+                          "caption","fallback","ms":{"vision","nemotron"}}
+    GET  /health   200: both keys, present and reachable, plus config and cache
+
+    curl -X POST --data-binary @images/water_beach_surf.jpg \
+         -H "Content-Type: image/jpeg" http://10.42.1.71:8099/world
+
+It binds all interfaces, because the Pi reaches this Mac over the wired link
+and reverse-proxies to it:
+
+    JZ_WORLD_UPSTREAM=http://10.42.1.71:8099/world    # on the Pi
+    JZ_WORLD_TIMEOUT_S=30                             # must exceed our budget
+
+Three rules the game depends on:
+
+  * **A request always ends in a world.** If the models fail, time out or the
+    keys are missing, the reply is still 200 with a playable world -- the
+    pipeline defaults, biome `meadow`, every scale 1.0 -- carrying
+    `"fallback": true` and named "Fallback Level". A fallback is never
+    disguised as a real answer, is logged between `!!!!` banners with the
+    reason, and is never cached. There is no 500 with an empty body anywhere
+    in the `/world` path.
+  * **25 seconds of wall clock, hard.** `pipeline.py`'s deadline is
+    cooperative -- each HTTP attempt and each backoff checks it -- and on top
+    of that the work runs on a worker thread the handler stops waiting on when
+    the budget expires. A slow answer is survivable for the game; a hang is
+    not.
+  * **Repeated frames are free.** Worlds are cached on the sha256 of the JPEG
+    bytes (128 entries, LRU), so a re-sent frame re-bills neither model and
+    comes back in 0 ms.
+
+Measured on this Mac, five distinct images, cold cache: median 4.6 s, worst
+24.2 s. The worst case was three NVIDIA 503s ("Service temporarily
+overloaded") and the pipeline's own backoff recovering on the fourth attempt,
+inside the budget. `logs/model_chat.jsonl` has the traffic either way.
 
 ## Recommended configuration (measured)
 
@@ -39,6 +91,7 @@ logs/model_chat.jsonl.
 
 ## Files
 
+    server.py           the HTTP service: POST /world, GET /health
     pipeline.py         the harness (was harness.py -- see note)
     bench.py            benchmark rig: models / configs / race / accuracy
     bench_waterrule.py  focused A/B on the water tie-break rule
@@ -65,7 +118,7 @@ See images/README.md for the filename convention.
 | ESP32-D0WD-V3 handheld | Controller: analog joystick, action + stick buttons, sensitivity toggle, 3-LED meter |
 | CP2102 USB-to-serial bridge | Firmware flashing and the wired controller transport |
 | External USB battery | Untethered power for the handheld |
-| macOS laptop | HTTPS server, pipeline host, ADB host |
+| macOS laptop | HTTPS server, world service host, ADB host |
 
 ### Models and APIs
 

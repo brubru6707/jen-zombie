@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stage 0 - Capability Probe</title>
+<style>
+  :root { --bg:#0b0d10; --fg:#e8ecf1; --ok:#35d07f; --bad:#ff5c5c; --warn:#ffb020; --dim:#8b96a5; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+              font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  body { padding:16px; font-size:19px; line-height:1.45; }
+  h1 { font-size:23px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:15px; margin-bottom:14px; }
+  .row { padding:9px 0; border-bottom:1px solid #1b2028; display:flex;
+         justify-content:space-between; gap:12px; align-items:baseline; }
+  .k { flex:1 1 auto; }
+  .v { flex:0 0 auto; font-weight:700; text-align:right; max-width:52%; word-break:break-word; }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  button { width:100%; padding:20px; font-size:21px; font-weight:700; margin:16px 0 8px;
+           background:#1f6feb; color:#fff; border:0; border-radius:12px;
+           font-family:inherit; }
+  button:disabled { background:#2a3038; color:var(--dim); }
+  button.secondary { background:#2a3038; }
+  #note { font-size:15px; color:var(--dim); margin-top:12px; white-space:pre-wrap; }
+  #overlay { position:fixed; inset:auto 0 0 0; padding:14px 16px; background:rgba(8,10,13,.86);
+             font-size:17px; display:none; }
+  #overlay.on { display:block; }
+</style>
+</head>
+<body>
+<h1>Stage 0 — Capability Probe</h1>
+<div class="sub" id="ua"></div>
+<div id="static"></div>
+<button id="run">RUN AR SESSION TESTS</button>
+<button id="send" class="secondary" disabled>SEND RESULTS TO MAC</button>
+<div id="session"></div>
+<div id="note"></div>
+<div id="overlay"><b>AR session running…</b><div id="ovtext">probing</div></div>
+
+<script>
+const TAG = "[PROBE]";
+const results = { started: new Date().toISOString(), static: {}, session: {}, errors: [] };
+
+function log(...a){ console.log(TAG, ...a); }
+function cls(v){ return v === true ? "ok" : v === false ? "bad" : "warn"; }
+function fmt(v){
+  if (v === true) return "YES";
+  if (v === false) return "NO";
+  if (v === null || v === undefined) return "n/a";
+  return String(v);
+}
+function add(where, key, val, note){
+  const d = document.createElement("div");
+  d.className = "row";
+  d.innerHTML = `<span class="k">${key}</span><span class="v ${cls(val)}">${fmt(val)}${
+      note ? `<div class="dim" style="font-weight:400;font-size:14px">${note}</div>` : ""}</span>`;
+  document.getElementById(where).appendChild(d);
+  log(key, "=", val, note || "");
+}
+function setNote(t){ document.getElementById("note").textContent = t; }
+function ov(t){ const e=document.getElementById("ovtext"); if(e) e.textContent = t; }
+
+document.getElementById("ua").textContent = navigator.userAgent;
+results.static.userAgent = navigator.userAgent;
+
+// ---------- static checks, no user gesture needed ----------
+(function staticChecks(){
+  try {
+    const sc = window.isSecureContext === true;
+    results.static.secureContext = sc;
+    add("static", "secure context", sc, sc ? location.origin : "immersive-ar will be refused");
+
+    const hasXR = !!navigator.xr;
+    results.static.navigatorXR = hasXR;
+    add("static", "navigator.xr present", hasXR);
+
+    results.static.webgl2 = (function(){
+      try { return !!document.createElement("canvas").getContext("webgl2"); }
+      catch(e){ return false; }
+    })();
+    add("static", "WebGL2", results.static.webgl2);
+
+    if (!hasXR) {
+      add("static", "isSessionSupported('immersive-ar')", false, "no navigator.xr");
+      document.getElementById("run").disabled = true;
+      return;
+    }
+    navigator.xr.isSessionSupported("immersive-ar").then(s => {
+      results.static.immersiveArSupported = s;
+      add("static", "isSessionSupported('immersive-ar')", s);
+      document.getElementById("run").disabled = !s;
+      if (!s) setNote("immersive-ar not supported. Check ARCore is installed and up to date.");
+      // Post the static half straight away so it is readable on the Mac without
+      // anyone having to tap anything; the session half follows after the tap.
+      results.phase = "static-only";
+      sendResults();
+    }).catch(e => {
+      results.static.immersiveArSupported = "error: " + e;
+      results.errors.push("isSessionSupported: " + e);
+      add("static", "isSessionSupported('immersive-ar')", null, String(e));
+    });
+  } catch (e) {
+    results.errors.push("staticChecks: " + e);
+    add("static", "static checks", null, String(e));
+  }
+})();
+
+// ---------- session checks, needs a user gesture ----------
+const OPTIONAL = ["anchors", "dom-overlay", "camera-access", "local-floor", "light-estimation"];
+
+async function endSafely(session){
+  try { await session.end(); } catch(e){ log("end() ignored:", e); }
+}
+
+async function probeCamera(session, gl, refSpace){
+  // Raw camera access: XRView.camera exists only if 'camera-access' was granted.
+  // ARCore holds the camera during a session, so this is the only way in.
+  return new Promise(resolve => {
+    let frames = 0;
+    let binding = null;
+    try { binding = new XRWebGLBinding(session, gl); }
+    catch (e) { return resolve({ error: "XRWebGLBinding failed: " + e }); }
+
+    function onFrame(t, frame){
+      frames++;
+      let out = null;
+      try {
+        const pose = frame.getViewerPose(refSpace);
+        if (pose) {
+          for (const view of pose.views) {
+            const cam = view.camera;
+            if (cam) {
+              let tex = null, texErr = null;
+              try { tex = binding.getCameraImage(cam); }
+              catch (e) { texErr = String(e); }
+              out = {
+                cameraPresent: true,
+                width: cam.width, height: cam.height,
+                textureObtained: !!tex,
+                textureError: texErr,
+                framesWaited: frames
+              };
+              break;
+            }
+          }
+        }
+        ov("frame " + frames + (out ? " - camera found" : " - waiting for camera"));
+      } catch (e) {
+        return resolve({ error: "frame loop: " + e, framesWaited: frames });
+      }
+      if (out) return resolve(out);
+      if (frames >= 120) return resolve({ cameraPresent:false, framesWaited: frames });
+      session.requestAnimationFrame(onFrame);
+    }
+    session.requestAnimationFrame(onFrame);
+  });
+}
+
+async function runSessionTests(){
+  const btn = document.getElementById("run");
+  btn.disabled = true; btn.textContent = "RUNNING…";
+  document.getElementById("session").innerHTML = "";
+  document.getElementById("overlay").classList.add("on");
+  let session = null;
+  try {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl2", { xrCompatible: true, alpha: true });
+    if (!gl) throw new Error("no WebGL2 context");
+
+    const init = {
+      requiredFeatures: ["hit-test"],
+      optionalFeatures: OPTIONAL.slice(),
+      domOverlay: { root: document.getElementById("overlay") }
+    };
+    log("requestSession init:", JSON.stringify({ ...init, domOverlay: "<el>" }));
+
+    const t0 = performance.now();
+    try {
+      session = await navigator.xr.requestSession("immersive-ar", init);
+    } catch (e) {
+      // Isolate: was it hit-test that failed, or the whole thing?
+      results.session.sessionWithHitTest = false;
+      results.session.requestError = String(e);
+      add("session", "session starts with ['hit-test']", false, String(e));
+      try {
+        session = await navigator.xr.requestSession("immersive-ar");
+        results.session.bareSessionStarts = true;
+        add("session", "bare immersive-ar session starts", true, "so 'hit-test' is the blocker");
+      } catch (e2) {
+        results.session.bareSessionStarts = false;
+        add("session", "bare immersive-ar session starts", false, String(e2));
+        throw e2;
+      }
+    }
+    if (results.session.sessionWithHitTest !== false) {
+      results.session.sessionWithHitTest = true;
+      results.session.startMs = Math.round(performance.now() - t0);
+      add("session", "session starts with ['hit-test']", true,
+          results.session.startMs + " ms");
+    }
+
+    try { await gl.makeXRCompatible(); } catch(e){ log("makeXRCompatible:", e); }
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+
+    // Which optional features were actually granted?
+    const enabled = session.enabledFeatures ? Array.from(session.enabledFeatures) : null;
+    results.session.enabledFeatures = enabled;
+    if (enabled) {
+      add("session", "enabledFeatures", enabled.join(", "));
+      for (const f of ["anchors", "dom-overlay", "camera-access"]) {
+        add("session", "  granted: " + f, enabled.includes(f));
+      }
+    } else {
+      add("session", "enabledFeatures", null, "not reported by this browser; inferring below");
+    }
+    results.session.domOverlayState = session.domOverlayState
+        ? session.domOverlayState.type : null;
+    add("session", "domOverlayState.type", results.session.domOverlayState || "none");
+
+    // hit-test source actually requestable?
+    try {
+      const viewer = await session.requestReferenceSpace("viewer");
+      const hts = await session.requestHitTestSource({ space: viewer });
+      results.session.hitTestSource = !!hts;
+      add("session", "requestHitTestSource()", true);
+      try { hts.cancel(); } catch(e){}
+    } catch (e) {
+      results.session.hitTestSource = "error: " + e;
+      add("session", "requestHitTestSource()", false, String(e));
+    }
+
+    let refSpace = null;
+    for (const t of ["local-floor", "local"]) {
+      try { refSpace = await session.requestReferenceSpace(t);
+            results.session.refSpace = t;
+            add("session", "reference space", t); break; }
+      catch (e) { log("refSpace", t, "failed", e); }
+    }
+    if (!refSpace) throw new Error("no usable reference space");
+
+    ov("reading camera frame…");
+    const cam = await probeCamera(session, gl, refSpace);
+    results.session.camera = cam;
+    if (cam.error) {
+      add("session", "camera-access frame", false, cam.error);
+    } else if (cam.cameraPresent) {
+      add("session", "camera frame dimensions", cam.width + " x " + cam.height,
+          "after " + cam.framesWaited + " frame(s)");
+      add("session", "getCameraImage() texture", cam.textureObtained,
+          cam.textureError || "");
+    } else {
+      add("session", "camera-access frame", false,
+          "XRView.camera never appeared in " + cam.framesWaited + " frames");
+    }
+  } catch (e) {
+    results.errors.push("runSessionTests: " + String(e));
+    add("session", "session tests", null, String(e));
+  } finally {
+    if (session) await endSafely(session);
+    document.getElementById("overlay").classList.remove("on");
+    btn.textContent = "RUN AR SESSION TESTS";
+    btn.disabled = false;
+    document.getElementById("send").disabled = false;
+    results.finished = new Date().toISOString();
+    log("RESULTS", JSON.stringify(results, null, 2));
+    setNote("Done. Tap SEND RESULTS TO MAC, or read them in chrome://inspect console (filter: [PROBE]).");
+    sendResults();
+  }
+}
+
+async function sendResults(){
+  try {
+    const r = await fetch("/probe-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(results)
+    });
+    setNote(r.ok ? "Results sent to the Mac (logs/probe_result.json)."
+                 : "Could not send results: HTTP " + r.status);
+    log("sendResults ->", r.status);
+  } catch (e) {
+    setNote("Could not send results: " + e + "\nRead them in the console instead.");
+    log("sendResults failed", e);
+  }
+}
+
+document.getElementById("run").addEventListener("click", runSessionTests);
+document.getElementById("send").addEventListener("click", sendResults);
+log("page ready");
+</script>
+</body>
+</html>

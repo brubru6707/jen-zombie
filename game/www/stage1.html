@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stage 1 — floor + box</title><link rel="stylesheet" href="css/ar.css">
+</head><body class="launch">
+<h1>Stage 1 — floor + one box</h1>
+<div class="sub">Find the floor, tap to place. GREEN is anchored (XRAnchor),
+AMBER is a fixed world transform 30 cm to its right. Walk around them: if the
+amber box slides relative to the room and the green one does not, anchoring is
+earning its keep.</div>
+<button id="enter">ENTER AR</button>
+<div id="err" class="sub"></div>
+<div id="hud"><button id="exit">EXIT</button></div>
+<script type="module">
+import { THREE, Hud, Fps, log, warn, startAR, makeRenderer, basicScene,
+         makeHitTestSource, postResult } from './js/arkit.js';
+
+const hud = new Hud('hud');
+const fps = new Fps();
+const state = {
+  placed:false, anchor:null, anchorFailed:false,
+  fixedPos:null, hitY:null, drift:0, driftMax:0, dy:0, dyMax:0,
+  samples:[], startedAt:null, trackingLost:0,
+};
+const BOX = 0.18;                 // 18 cm cube, big enough to judge by eye
+const OFFSET_X = 0.30;            // amber sits 30 cm +X of green, for visibility
+
+document.getElementById('enter').addEventListener('click', run);
+
+async function run() {
+  const btn = document.getElementById('enter');
+  btn.disabled = true; btn.textContent = 'STARTING…';
+  let session;
+  try {
+    session = await startAR({ overlayRoot: document.getElementById('hud') });
+  } catch (e) {
+    document.getElementById('err').textContent = String(e);
+    btn.disabled = false; btn.textContent = 'ENTER AR';
+    return;
+  }
+  document.body.classList.remove('launch');
+  document.getElementById('hud').classList.add('on');
+  document.getElementById('exit').classList.add('on');
+  document.getElementById('exit').onclick = () => { try { session.end(); } catch(e){} };
+
+  const renderer = makeRenderer(session);
+  const { scene, camera } = basicScene();
+  await renderer.xr.setSession(session);
+
+  // ---- scene objects -------------------------------------------------
+  const reticle = new THREE.Mesh(
+    new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x35d07f, transparent:true, opacity:0.9 }));
+  reticle.visible = false;
+  scene.add(reticle);
+
+  const mkBox = (color) => {
+    const g = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.BoxGeometry(BOX, BOX, BOX),
+      new THREE.MeshStandardMaterial({ color, roughness:0.45, metalness:0.05 }));
+    m.position.y = BOX / 2;                       // sit ON the floor plane
+    g.add(m);
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(BOX, BOX, BOX)),
+      new THREE.LineBasicMaterial({ color: 0x000000 }));
+    edge.position.y = BOX / 2;
+    g.add(edge);
+    g.visible = false;
+    scene.add(g);
+    return g;
+  };
+  const anchoredBox = mkBox(0x35d07f);   // green  — follows the XRAnchor
+  const fixedBox    = mkBox(0xffb020);   // amber  — never moves after placement
+
+  const session_ = session;
+  const hitSource = await makeHitTestSource(session_);
+  let placeRequested = false;
+  session_.addEventListener('select', () => { placeRequested = true; });
+  session_.addEventListener('end', onEnd);
+
+  hud.message('Point at the floor, then tap to place');
+
+  const tmpPos = new THREE.Vector3();
+  const tmpQuat = new THREE.Quaternion();
+  const playerPos = new THREE.Vector3();
+  let lastPost = 0;
+
+  renderer.setAnimationLoop((t, frame) => {
+    try {
+      const f = fps.tick(t);
+      if (!frame) { renderer.render(scene, camera); return; }
+      const refSpace = renderer.xr.getReferenceSpace();
+      if (!refSpace) { renderer.render(scene, camera); return; }
+
+      // Finding 1: floor height is the reference-space plane, y = 0 in
+      // local-floor. Hit-test only supplies WHERE on the floor, not how high.
+      const floorY = 0;
+
+      const viewerPose = frame.getViewerPose(refSpace);
+      if (!viewerPose) {
+        state.trackingLost++;
+        hud.set('tracking', 'LOST', 'bad');
+      } else {
+        hud.set('tracking', 'ok', 'ok');
+        playerPos.setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
+      }
+
+      // ---- hit test -> reticle ----------------------------------------
+      let hit = null;
+      if (hitSource && !state.placed) {
+        const results = frame.getHitTestResults(hitSource);
+        if (results.length) {
+          const pose = results[0].getPose(refSpace);
+          if (pose) {
+            hit = results[0];
+            const p = pose.transform.position;
+            state.hitY = p.y;
+            reticle.position.set(p.x, floorY + 0.002, p.z);
+            reticle.visible = true;
+            hud.set('hit y vs floor y', `${p.y.toFixed(3)} / ${floorY.toFixed(3)}`,
+                    Math.abs(p.y - floorY) > 0.12 ? 'warn' : '');
+          }
+        } else {
+          reticle.visible = false;
+        }
+      }
+
+      // ---- placement ---------------------------------------------------
+      if (placeRequested && !state.placed) {
+        placeRequested = false;
+        if (!hit) {
+          hud.message('No floor under the reticle — move back and try again', 'warn');
+        } else {
+          const pose = hit.getPose(refSpace);
+          state.fixedPos = new THREE.Vector3(pose.transform.position.x, floorY,
+                                             pose.transform.position.z);
+          fixedBox.position.set(state.fixedPos.x + OFFSET_X, floorY, state.fixedPos.z);
+          fixedBox.visible = true;
+          anchoredBox.position.copy(state.fixedPos);
+          anchoredBox.visible = true;
+          reticle.visible = false;
+          state.placed = true;
+          state.startedAt = t;
+          hud.message('Walk around them. Green = anchored, amber = fixed.', 'ok');
+          log('placed at', state.fixedPos.toArray().map(n => n.toFixed(3)).join(', '));
+
+          // Create a real XRAnchor from the hit result.
+          if (typeof hit.createAnchor === 'function') {
+            hit.createAnchor().then(a => {
+              state.anchor = a;
+              state.anchorOrigin = null;
+              log('XRAnchor created');
+            }).catch(e => {
+              state.anchorFailed = true;
+              warn('createAnchor failed, green box falls back to fixed transform:', e);
+            });
+          } else {
+            state.anchorFailed = true;
+            warn('createAnchor unavailable on hit result');
+          }
+        }
+      }
+
+      // ---- follow the anchor ------------------------------------------
+      if (state.placed) {
+        if (state.anchor) {
+          const ap = frame.getPose(state.anchor.anchorSpace, refSpace);
+          if (ap) {
+            const p = ap.transform.position;
+            if (!state.anchorOrigin) state.anchorOrigin = new THREE.Vector3(p.x, p.y, p.z);
+            // Drift measured on the RAW anchor pose, so the number is honest.
+            tmpPos.set(p.x, p.y, p.z);
+            state.drift = tmpPos.distanceTo(state.anchorOrigin);
+            state.dy = p.y - state.anchorOrigin.y;
+            if (state.drift > state.driftMax) state.driftMax = state.drift;
+            if (Math.abs(state.dy) > Math.abs(state.dyMax)) state.dyMax = state.dy;
+            // Rendered with floor-locked Y per finding 1, anchored XZ.
+            anchoredBox.position.set(p.x, floorY, p.z);
+            tmpQuat.set(ap.transform.orientation.x, ap.transform.orientation.y,
+                        ap.transform.orientation.z, ap.transform.orientation.w);
+            anchoredBox.quaternion.set(0, tmpQuat.y, 0, tmpQuat.w).normalize();
+          }
+          hud.set('anchor', state.anchorFailed ? 'FAILED' : 'XRAnchor', state.anchorFailed ? 'bad' : 'ok');
+        } else {
+          hud.set('anchor', state.anchorFailed ? 'FAILED — fixed transform' : 'creating…',
+                  state.anchorFailed ? 'bad' : 'warn');
+        }
+        hud.set('anchor drift now / max',
+                `${(state.drift*100).toFixed(1)} / ${(state.driftMax*100).toFixed(1)} cm`,
+                state.driftMax > 0.10 ? 'warn' : 'ok');
+        hud.set('anchor Δy max', `${(state.dyMax*100).toFixed(1)} cm`,
+                Math.abs(state.dyMax) > 0.05 ? 'warn' : '');
+        if (viewerPose) {
+          hud.set('distance to green', `${playerPos.distanceTo(anchoredBox.position).toFixed(2)} m`);
+        }
+        hud.set('elapsed', `${((t - state.startedAt)/1000).toFixed(0)} s`);
+
+        if (t - lastPost > 5000) {
+          lastPost = t;
+          state.samples.push({ t: Math.round(t), drift: +state.drift.toFixed(4),
+                               dy: +state.dy.toFixed(4) });
+          postResult('stage1', {
+            stage: 1, anchorUsed: !!state.anchor, anchorFailed: state.anchorFailed,
+            driftNow: state.drift, driftMax: state.driftMax, dyMax: state.dyMax,
+            hitY: state.hitY, trackingLostFrames: state.trackingLost,
+            fps: fps.value, elapsedS: (t - state.startedAt)/1000,
+            samples: state.samples.slice(-40),
+          });
+        }
+      }
+      hud.set('fps', f || '—');
+      renderer.render(scene, camera);
+    } catch (e) {
+      // Nothing may raise into the render loop.
+      warn('frame error (ignored):', e);
+    }
+  });
+
+  function onEnd() {
+    try {
+      renderer.setAnimationLoop(null);
+      document.getElementById('hud').classList.remove('on');
+      document.getElementById('exit').classList.remove('on');
+      document.body.classList.add('launch');
+      btn.disabled = false; btn.textContent = 'ENTER AR';
+      document.getElementById('err').textContent =
+        `Last run: anchor ${state.anchor ? 'used' : (state.anchorFailed ? 'FAILED' : 'not created')}, ` +
+        `max drift ${(state.driftMax*100).toFixed(1)} cm, Δy ${(state.dyMax*100).toFixed(1)} cm.`;
+      postResult('stage1', { stage:1, final:true, anchorUsed: !!state.anchor,
+        anchorFailed: state.anchorFailed, driftMax: state.driftMax, dyMax: state.dyMax,
+        trackingLostFrames: state.trackingLost, samples: state.samples });
+      log('session ended; driftMax(cm)=', (state.driftMax*100).toFixed(1));
+    } catch (e) { warn('onEnd:', e); }
+  }
+}
+</script>
+</body></html>

@@ -1,0 +1,37 @@
+:root { --bg:#0b0d10; --fg:#e8ecf1; --ok:#35d07f; --bad:#ff5c5c; --warn:#ffb020; --dim:#8b96a5; }
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; }
+body.launch { padding:16px; overflow:auto; }
+canvas { position:fixed; inset:0; width:100vw; height:100vh; display:block; }
+h1 { font-size:22px; margin:0 0 4px; }
+.sub { color:var(--dim); font-size:15px; margin-bottom:16px; }
+button { width:100%; padding:20px; font-size:21px; font-weight:700; margin:10px 0;
+         background:#1f6feb; color:#fff; border:0; border-radius:12px; font-family:inherit; }
+button:disabled { background:#2a3038; color:var(--dim); }
+button.secondary { background:#2a3038; }
+a.nav { display:block; padding:18px; margin:10px 0; background:#161b22; color:var(--fg);
+        border-radius:12px; text-decoration:none; font-size:19px; border:1px solid #232a33; }
+a.nav small { display:block; color:var(--dim); font-size:14px; margin-top:4px; }
+
+/* dom-overlay HUD */
+#hud { position:fixed; inset:0 0 auto 0; padding:10px 12px calc(10px + env(safe-area-inset-top));
+       font-size:15px; line-height:1.35; pointer-events:none; display:none; }
+#hud.on { display:block; }
+/* Each row carries its own backdrop: the rows run further down the screen than
+   any header gradient, and grey-on-camera-feed is unreadable in a bright room. */
+.hrow { display:flex; justify-content:space-between; gap:10px;
+        background:rgba(8,10,13,.62); border-radius:6px;
+        padding:1px 8px; margin-bottom:2px; }
+.hk { color:#cbd5e1; text-shadow:0 1px 3px rgba(0,0,0,.95); }
+.hv { font-weight:700; text-align:right; text-shadow:0 1px 3px rgba(0,0,0,.95); }
+.hv.ok{color:var(--ok)} .hv.bad{color:var(--bad)} .hv.warn{color:var(--warn)}
+.hmsg { margin-top:8px; padding:10px 12px; background:rgba(31,111,235,.92); border-radius:10px;
+        font-size:17px; font-weight:700; text-align:center; }
+.hmsg.ok{background:rgba(53,208,127,.92); color:#04210f}
+.hmsg.bad{background:rgba(255,92,92,.92)}
+.hmsg.warn{background:rgba(255,176,32,.94); color:#241700}
+#exit { position:fixed; right:12px; bottom:calc(14px + env(safe-area-inset-bottom));
+        width:auto; padding:14px 20px; margin:0; background:rgba(40,46,54,.92);
+        font-size:16px; display:none; }
+#exit.on { display:block; }

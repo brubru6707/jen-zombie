@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>zombie-ar dashboard</title>
+<style>
+  :root { --bg:#0b0d10; --panel:#12161c; --line:#1e242d; --fg:#e8ecf1; --dim:#8b96a5;
+          --ok:#35d07f; --bad:#ff5c5c; --warn:#ffb020; --accent:#4aa3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); padding:18px;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; align-items:baseline; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; }
+  #conn { font-size:15px; font-weight:700; padding:4px 10px; border-radius:8px; }
+  #conn.live { background:rgba(53,208,127,.16); color:var(--ok); }
+  #conn.stale { background:rgba(255,176,32,.16); color:var(--warn); }
+  #conn.dead { background:rgba(255,92,92,.16); color:var(--bad); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { font-size:13px; letter-spacing:1.5px; text-transform:uppercase;
+             color:var(--dim); margin:0 0 10px; font-weight:700; }
+  .r { display:flex; justify-content:space-between; gap:12px; padding:5px 0;
+       border-bottom:1px solid rgba(255,255,255,.04); font-size:15px; }
+  .r:last-child { border-bottom:0; }
+  .k { color:var(--dim); }
+  .v { font-weight:700; text-align:right; }
+  .v.ok{color:var(--ok)} .v.bad{color:var(--bad)} .v.warn{color:var(--warn)} .v.dim{color:var(--dim)}
+  .big { font-size:34px; font-weight:800; line-height:1.1; }
+  /* level meter with floor/ceiling markers */
+  .meter { position:relative; height:26px; background:#0a0d11; border:1px solid var(--line);
+           border-radius:7px; margin:10px 0 4px; overflow:hidden; }
+  .meter .fill { position:absolute; inset:0 auto 0 0; background:linear-gradient(90deg,#2f7d4f,#8fd14f,#ffb020,#ff5c5c); }
+  .meter .mark { position:absolute; top:0; bottom:0; width:2px; background:#fff; opacity:.85; }
+  .meter .mark.ceil { background:var(--bad); }
+  .meter .peak { position:absolute; top:0; bottom:0; width:3px; background:#fff; opacity:.9; }
+  .scale { display:flex; justify-content:space-between; font-size:12px; color:var(--dim); }
+  .bar { height:14px; background:#0a0d11; border:1px solid var(--line); border-radius:7px;
+         overflow:hidden; margin-top:6px; }
+  .bar span { display:block; height:100%; background:linear-gradient(90deg,#35d07f,#ffb020,#ff5c5c); width:0; }
+  footer { margin-top:14px; color:var(--dim); font-size:13px; }
+  .lamp { display:inline-block; width:18px; height:18px; border-radius:50%; margin-left:6px;
+          opacity:.15; vertical-align:middle; }
+  .lamp.g{background:#35d07f} .lamp.y{background:#ffb020} .lamp.r{background:#ff5c5c}
+  /* Controls. These live here, not on the headset: the phone is being held at
+     arm's length in an AR session and its screen is for the game. */
+  .ctl { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:8px 0 2px; }
+  .ctl button { font:inherit; font-size:13px; font-weight:700; color:var(--fg);
+                background:#1d242d; border:1px solid var(--line); border-radius:8px;
+                padding:9px 12px; cursor:pointer; }
+  .ctl button:hover { background:#28313c; }
+  .ctl button:active { transform:translateY(1px); }
+  .ctl button.on { background:#1f6feb; border-color:#1f6feb; }
+  .ctl button.cal { background:#2f7d4f; border-color:#2f7d4f; }
+  .ctl button.warn { background:#6b3a12; border-color:#8a4c18; }
+  .ctl .lbl { color:var(--dim); font-size:12px; letter-spacing:1px; margin-right:2px; }
+  #cmdmsg { font-size:12px; color:var(--dim); min-height:15px; margin-top:6px; }
+  /* The model traffic, as a conversation. The game on the right, whichever
+     model it is talking to on the left, oldest at the top -- so it reads the
+     way a thread reads and you can see a prompt and its answer together. */
+  .wide { grid-column:1/-1; }
+  #thread { max-height:56vh; overflow-y:auto; padding:4px 2px 2px; scroll-behavior:smooth; }
+  .day { text-align:center; color:var(--dim); font-size:11px; letter-spacing:1px;
+         text-transform:uppercase; margin:14px 0 8px; }
+  .msg { display:flex; gap:9px; margin:0 0 10px; align-items:flex-end; }
+  .msg.out { flex-direction:row-reverse; }
+  .who { width:30px; height:30px; border-radius:50%; flex:0 0 30px; font-size:10px;
+         font-weight:800; display:flex; align-items:center; justify-content:center;
+         color:#0b0d10; letter-spacing:.5px; }
+  .who.game { background:#4aa3ff; }
+  .who.gemini { background:#8ab4f8; }
+  .who.nemotron { background:#c792ea; }
+  .who.err { background:var(--bad); color:#fff; }
+  .col { max-width:80%; min-width:0; }
+  .msg.out .col { margin-left:auto; }
+  .name { font-size:11px; color:var(--dim); margin:0 0 3px 2px; }
+  .msg.out .name { text-align:right; margin:0 2px 3px 0; }
+  .bub { padding:9px 12px; border-radius:14px; font-size:13px; line-height:1.5;
+         white-space:pre-wrap; word-break:break-word; position:relative; }
+  .msg.out .bub { background:#1b3a5c; border:1px solid #27527f; border-bottom-right-radius:4px; color:#dcecff; }
+  .msg.in  .bub { background:#171d25; border:1px solid var(--line); border-bottom-left-radius:4px; color:#d7e2d9; }
+  .msg.in.bad .bub { border-color:#6b2f2f; color:#ffd9d9; }
+  .bub.clip { max-height:120px; overflow:hidden; }
+  .bub.clip::after { content:''; position:absolute; left:0; right:0; bottom:0; height:44px;
+                     background:linear-gradient(transparent, #171d25); }
+  .msg.out .bub.clip::after { background:linear-gradient(transparent, #1b3a5c); }
+  .more { display:inline-block; margin-top:5px; font-size:11px; color:var(--accent);
+          cursor:pointer; user-select:none; }
+  .stamp { font-size:10px; color:#6b7684; margin:3px 2px 0; }
+  .msg.out .stamp { text-align:right; }
+  /* The photo the world was built from, shown the way an attachment is. */
+  .shot { margin-top:8px; }
+  .shot img { display:block; max-width:min(240px,60%); width:auto; max-height:260px;
+              border-radius:10px; border:1px solid rgba(255,255,255,.14); cursor:zoom-in; }
+  .shot.big img { max-width:100%; max-height:none; cursor:zoom-out; }
+  .shot .cap { font-size:11px; color:#a9bccb; margin-top:4px; }
+  .shot .cap.missing { color:var(--warn); }
+  .trace-head { display:flex; gap:10px; align-items:baseline; margin-bottom:6px; flex-wrap:wrap; }
+  .trace-head button { font:inherit; font-size:12px; color:var(--fg); background:#1d242d;
+                       border:1px solid var(--line); border-radius:7px; padding:5px 10px; cursor:pointer; }
+</style>
+</head><body>
+<header>
+  <h1>zombie-ar — live stats</h1>
+  <span id="conn" class="dead">waiting…</span>
+  <span class="k" id="src"></span>
+</header>
+<div class="grid">
+  <div class="card">
+    <h2>Audio</h2>
+    <div class="r"><span class="k">mic</span><span class="v" id="mic-state">—</span></div>
+    <div class="big" id="mic-db">—</div>
+    <div class="meter" id="meter">
+      <div class="fill" id="meter-fill" style="width:0"></div>
+      <div class="mark" id="mark-floor" style="left:0"></div>
+      <div class="mark ceil" id="mark-ceil" style="left:100%"></div>
+      <div class="peak" id="mark-peak" style="left:0"></div>
+    </div>
+    <div class="scale"><span>-100</span><span>-60</span><span>-30</span><span>0 dBFS</span></div>
+    <div class="r"><span class="k">peak 2 s</span><span class="v" id="mic-peak">—</span></div>
+    <div class="r"><span class="k">hostility</span><span class="v" id="mic-host">—</span></div>
+    <div class="bar"><span id="host-bar"></span></div>
+    <div class="r"><span class="k">sensitivity</span><span class="v" id="mic-sens">—</span></div>
+    <div class="r"><span class="k">window</span><span class="v" id="mic-win">—</span></div>
+    <div class="r"><span class="k">calibrated</span><span class="v" id="mic-cal">—</span></div>
+    <div class="ctl" id="sens-ctl"><span class="lbl">SENS</span></div>
+    <div class="ctl">
+      <span class="lbl">TRIM</span>
+      <button data-trim="-1.5">−1.5 dB</button>
+      <button data-trim="1.5">+1.5 dB</button>
+      <button data-trim="0" id="trim-zero">reset trim</button>
+    </div>
+    <div class="ctl">
+      <button class="cal" id="do-cal">CALIBRATE (3 s quiet)</button>
+      <button class="warn" id="do-reset">reset calibration</button>
+    </div>
+    <div id="cmdmsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>World</h2>
+    <div class="big" id="w-biome">—</div>
+    <div class="r"><span class="k">name</span><span class="v" id="w-name">—</span></div>
+    <div class="r"><span class="k">source</span><span class="v" id="w-source">—</span></div>
+    <div class="r"><span class="k">caption</span><span class="v" id="w-caption" style="font-weight:400;font-size:13px;text-align:left">—</span></div>
+    <div class="r"><span class="k">snapshot cooldown</span><span class="v" id="w-count">—</span></div>
+    <div class="r"><span class="k">snapshots / early presses</span><span class="v" id="w-snaps">—</span></div>
+    <div class="r"><span class="k">swaps</span><span class="v" id="w-swaps">—</span></div>
+    <div class="r"><span class="k">swap cost last / max</span><span class="v" id="w-swapms">—</span></div>
+    <div class="r"><span class="k">next world</span><span class="v" id="w-next">—</span></div>
+    <div class="r"><span class="k">fetch fails</span><span class="v" id="w-fails">—</span></div>
+    <div class="r"><span class="k">last error</span><span class="v" id="w-err">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Session</h2>
+    <div class="r"><span class="k">tracking</span><span class="v" id="s-track">—</span></div>
+    <div class="r"><span class="k">fps</span><span class="v" id="s-fps">—</span></div>
+    <div class="r"><span class="k">worst frame</span><span class="v" id="s-worst">—</span></div>
+    <div class="r"><span class="k">player height</span><span class="v" id="s-y">—</span></div>
+    <div class="r"><span class="k">telemetry sent / failed</span><span class="v" id="s-tel">—</span></div>
+    <div class="r"><span class="k">render</span><span class="v" id="s-render">—</span></div>
+    <div class="r"><span class="k">stalls (&gt;120 ms)</span><span class="v" id="s-stalls">—</span></div>
+    <div class="r"><span class="k">tracking lost</span><span class="v" id="s-lost">—</span></div>
+    <div class="r"><span class="k">green auras</span><span class="v" id="s-aura">—</span></div>
+    <div class="r"><span class="k">dialogue said / spoken</span><span class="v" id="s-voice">—</span></div>
+    <div class="r"><span class="k">last line</span><span class="v" id="s-line">—</span></div>
+    <div class="r"><span class="k">voice error</span><span class="v" id="s-voiceerr">—</span></div>
+    <div id="s-worst" style="font-size:12px;color:var(--dim);line-height:1.6;margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Player &amp; room</h2>
+    <div class="big" id="p-hearts">—</div>
+    <div class="r"><span class="k">immunity</span><span class="v" id="p-immune">—</span></div>
+    <div class="r"><span class="k">hits taken / blocked</span><span class="v" id="p-hits">—</span></div>
+    <div class="r"><span class="k">overruns</span><span class="v" id="p-over">—</span></div>
+    <div class="r"><span class="k">score</span><span class="v" id="p-score">—</span></div>
+    <div class="r"><span class="k">kills / snapshots</span><span class="v" id="p-kills">—</span></div>
+    <div class="r"><span class="k">room</span><span class="v" id="r-mood">—</span></div>
+    <div class="r"><span class="k">turning over</span><span class="v" id="r-pending">—</span></div>
+    <div class="bar"><span id="r-bar"></span></div>
+    <div class="r"><span class="k">hostile / calm / leaving</span><span class="v" id="r-mix">—</span></div>
+    <div class="r"><span class="k">turnovers</span><span class="v" id="r-changes">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Mobs</h2>
+    <div class="big" id="m-count">—</div>
+    <div class="r"><span class="k">closed in</span><span class="v" id="m-arrived">—</span></div>
+    <div class="r"><span class="k">nearest</span><span class="v" id="m-near">—</span></div>
+    <div class="r"><span class="k">stop distance</span><span class="v" id="m-stop">—</span></div>
+    <div class="r"><span class="k">kills</span><span class="v" id="m-kills">—</span></div>
+    <div class="r"><span class="k">dying / hp left</span><span class="v" id="m-hp">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Weapon</h2>
+    <div class="big" id="wp-name">—</div>
+    <div class="r"><span class="k">state</span><span class="v" id="wp-state">—</span></div>
+    <div class="r"><span class="k">swings</span><span class="v" id="wp-swings">—</span></div>
+    <div class="r"><span class="k">XR select / DOM pointer</span><span class="v" id="wp-input">—</span></div>
+    <div class="r"><span class="k">error</span><span class="v" id="wp-err">—</span></div>
+    <div class="r"><span class="k">slashes thrown</span><span class="v" id="wp-thrown">—</span></div>
+    <div class="r"><span class="k">hits / kills</span><span class="v" id="wp-hits">—</span></div>
+    <div class="r"><span class="k">in flight / missed</span><span class="v" id="wp-live">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Camera frame → world</h2>
+    <div class="big" id="cap-cost">—</div>
+    <div class="r"><span class="k">capture cost last / max</span><span class="v" id="cap-ms">—</span></div>
+    <div class="r"><span class="k">frame</span><span class="v" id="cap-frame">—</span></div>
+    <div class="r"><span class="k">POST / GET (fails)</span><span class="v" id="cap-req">—</span></div>
+    <div class="r"><span class="k">camera not ready frames</span><span class="v" id="cap-wait">—</span></div>
+    <div class="r"><span class="k">last fetch</span><span class="v" id="cap-fetch">—</span></div>
+    <div class="r"><span class="k">last reason</span><span class="v" id="cap-reason">—</span></div>
+    <img id="cap-img" alt="last frame the phone sent" style="width:100%;border-radius:8px;margin-top:8px;display:none">
+  </div>
+
+  <div class="card">
+    <h2>Handheld</h2>
+    <div class="big" id="pad-state">—</div>
+    <div class="r"><span class="k">link (/events)</span><span class="v" id="pad-link">—</span></div>
+    <div class="r"><span class="k">stick x / y</span><span class="v" id="pad-stick">—</span></div>
+    <div class="r"><span class="k">atk / sw</span><span class="v" id="pad-btn">—</span></div>
+    <div class="r"><span class="k">sens switch</span><span class="v" id="pad-sens">—</span></div>
+    <div class="r"><span class="k">frames / age</span><span class="v" id="pad-frames">—</span></div>
+    <div class="r"><span class="k">drops</span><span class="v" id="pad-drops">—</span></div>
+    <div class="r"><span class="k">pad swings / skips</span><span class="v" id="pad-acts">—</span></div>
+    <div class="r"><span class="k">target</span><span class="v" id="pad-target">—</span></div>
+    <div class="r"><span class="k">lamps g / y / r</span><span class="v" id="pad-leds"><span class="lamp g"></span><span class="lamp y"></span><span class="lamp r"></span></span></div>
+    <div class="r"><span class="k">led posts sent / failed</span><span class="v" id="pad-ledn">—</span></div>
+  </div>
+  <div class="card wide">
+    <h2>The game talking to the models</h2>
+    <div class="trace-head">
+      <span class="k" id="tr-status">loading…</span>
+      <button id="tr-refresh">refresh</button>
+      <button id="tr-pause">pause</button>
+      <button id="tr-expand">show full prompts</button>
+      <span class="k" id="tr-log"></span>
+    </div>
+    <div id="thread"></div>
+  </div>
+</div>
+<footer>Polling <code>/telemetry</code> at 5 Hz. The headset shows no diagnostics — everything is here.</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const DB_LO = -100, DB_HI = 0;
+const pct = db => Math.max(0, Math.min(100, ((db - DB_LO) / (DB_HI - DB_LO)) * 100));
+const set = (id, text, cls) => { const e = $(id); e.textContent = text; e.className = 'v' + (cls ? ' ' + cls : ''); };
+let lastSeq = -1, lastChange = Date.now();
+
+async function poll() {
+  let j = null;
+  try {
+    const r = await fetch('/telemetry', { cache: 'no-store' });
+    j = await r.json();
+  } catch (e) { j = null; }
+
+  const conn = $('conn');
+  if (!j || !j.data) {
+    conn.className = 'dead'; conn.textContent = 'no data from headset';
+    return;
+  }
+  if (j.seq !== lastSeq) { lastSeq = j.seq; lastChange = Date.now(); }
+  const age = Date.now() - lastChange;
+  if (age < 1500) { conn.className = 'live'; conn.textContent = 'LIVE'; }
+  else if (age < 6000) { conn.className = 'stale'; conn.textContent = `stale ${(age/1000).toFixed(1)}s`; }
+  else { conn.className = 'dead'; conn.textContent = `HEADSET SILENT ${(age/1000|0)}s`; }
+  $('src').textContent = `seq ${j.seq}`;
+
+  const d = j.data, mic = d.mic || {}, cy = d.cycle || {}, se = d.session || {}, mo = d.mobs || {};
+
+  // ---- audio ----
+  const live = mic.state === 'live';
+  set('mic-state', mic.suppressed ? 'DEAFENED (the game is talking)'
+      : live ? 'live' : (mic.state || '—').toUpperCase() + (mic.error ? ' — ' + mic.error : ''),
+      mic.suppressed ? 'warn' : live ? 'ok' : 'bad');
+  $('mic-db').textContent = live && mic.db != null ? mic.db.toFixed(1) + ' dBFS' : '—';
+  $('mic-db').style.color = live ? '' : 'var(--bad)';
+  if (live && mic.db != null) {
+    $('meter-fill').style.width = pct(mic.db) + '%';
+    $('mark-peak').style.left = pct(mic.peak) + '%';
+  } else { $('meter-fill').style.width = '0'; }
+  if (mic.floor != null) $('mark-floor').style.left = pct(mic.floor) + '%';
+  if (mic.ceiling != null) $('mark-ceil').style.left = pct(mic.ceiling) + '%';
+  set('mic-peak', live && mic.peak != null ? mic.peak.toFixed(1) + ' dBFS' : '—');
+  const h = live && mic.hostility != null ? mic.hostility : null;
+  set('mic-host', h == null ? '—' : h.toFixed(2),
+      h == null ? 'bad' : h > 0.66 ? 'bad' : h > 0.2 ? 'warn' : 'ok');
+  $('host-bar').style.width = ((h || 0) * 100) + '%';
+  set('mic-sens', (mic.preset || '—') + (mic.fineDb ? ` ${mic.fineDb > 0 ? '+' : ''}${mic.fineDb} dB` : ''));
+  buildSensButtons(mic.presets, mic.preset);
+  set('mic-win', mic.floor != null ? `${mic.floor.toFixed(1)} → ${mic.ceiling.toFixed(1)} dBFS` : '—');
+  set('mic-cal', mic.calibrating ? `SAMPLING ${(mic.calRemainingMs/1000).toFixed(1)}s`
+      : (mic.calibratedAt ? new Date(mic.calibratedAt).toLocaleTimeString() : 'defaults'),
+      mic.calibrating ? 'warn' : (mic.calibratedAt ? 'ok' : 'dim'));
+
+  // ---- world ----
+  $('w-biome').textContent = d.world ? d.world.biome.toUpperCase() : '—';
+  if (d.world && d.world.accent) $('w-biome').style.color = d.world.accent;
+  set('w-name', d.world ? d.world.name : '—');
+  // What am I looking at: a real Nemotron world or a stand-in?
+  const src = d.world ? (d.world.source || 'canned') : null;
+  const real = src === 'upstream' && !d.world.fallback;
+  set('w-source', !src ? '—' : real ? 'UPSTREAM · real world'
+      : src === 'upstream' ? 'UPSTREAM · pipeline fallback' : src.toUpperCase() + (d.world.reason ? ' · ' + d.world.reason : ''),
+      real ? 'ok' : 'warn');
+  $('w-caption').textContent = d.world && d.world.caption ? d.world.caption : '—';
+  $('w-caption').className = 'v';
+  set('w-count', cy.awaiting ? 'SCANNING…'
+      : cy.cooldownReady ? 'READY — press the stick'
+      : (cy.remainingMs != null ? Math.ceil(cy.remainingMs / 1000) + ' s' : '—'),
+      cy.awaiting ? 'warn' : cy.cooldownReady ? 'ok' : '');
+  set('w-snaps', cy.manual === false ? 'automatic mode' : `${cy.snapshots ?? 0} / ${cy.earlyPresses ?? 0}`,
+      cy.earlyPresses ? 'warn' : 'dim');
+  set('w-swaps', `${cy.swaps ?? '—'} (${cy.lateSwaps ?? 0} late)`, cy.lateSwaps ? 'warn' : '');
+  set('w-swapms', cy.lastSwapMs != null ? `${cy.lastSwapMs.toFixed(2)} / ${cy.maxSwapMs.toFixed(2)} ms` : '—',
+      cy.maxSwapMs > 8 ? 'warn' : 'ok');
+  set('w-next', cy.ready ? `ready (${cy.lastFetchMs} ms)` : (cy.fetching ? 'fetching…' : 'idle'),
+      cy.ready ? 'ok' : (cy.fetching ? 'warn' : 'dim'));
+  set('w-fails', cy.fails ?? '—', cy.fails ? 'warn' : 'ok');
+  set('w-err', cy.lastError ? String(cy.lastError).slice(0, 44) : 'none', cy.lastError ? 'bad' : 'dim');
+
+  // ---- session ----
+  set('s-track', se.tracking ? 'ok' : 'LOST', se.tracking ? 'ok' : 'bad');
+  set('s-fps', se.fps ?? '—', (se.fps || 0) < 30 ? 'warn' : 'ok');
+  set('s-worst', se.worstFrameMs != null ? se.worstFrameMs.toFixed(1) + ' ms' : '—',
+      (se.worstFrameMs || 0) > 33 ? 'warn' : 'ok');
+  set('s-y', se.playerY != null ? se.playerY.toFixed(2) + ' m' : '—');
+  set('s-tel', d.telemetry ? `${d.telemetry.sent} / ${d.telemetry.failed}` : '—',
+      d.telemetry && d.telemetry.failed ? 'warn' : 'dim');
+  set('s-render', se.hz ? `${se.hz} Hz · fb ${se.fbScale}${se.aa ? ' · MSAA' : ''}` : '—', 'dim');
+  set('s-stalls', se.stalls != null ? `${se.stalls} · ${((se.stallMs || 0) / 1000).toFixed(1)} s lost` : '—',
+      se.stalls ? 'warn' : 'ok');
+  set('s-lost', se.trackLosses != null
+      ? `${se.trackLosses}× · ${((se.trackLostMs || 0) / 1000).toFixed(1)} s · worst ${((se.worstLossMs || 0) / 1000).toFixed(1)} s`
+      : '—', se.lostNow ? 'bad' : se.trackLosses ? 'warn' : 'ok');
+  const au = d.aura || {};
+  set('s-aura', au.calm != null ? `${au.calm} mobs · ${au.motes} motes` : '—', 'dim');
+  const vo = d.voices || {};
+  set('s-voice', vo.lines != null ? `${vo.lines} / ${vo.spoken} (${vo.silent || 0} silent)` : '—',
+      vo.silent ? 'warn' : 'dim');
+  set('s-line', vo.saying ? `“${vo.saying.text}” (${vo.saying.role}${vo.saying.spoken ? ', voiced' : ', text only'})` : '—',
+      vo.saying ? (vo.saying.spoken ? 'ok' : 'warn') : 'dim');
+  set('s-voiceerr', vo.lastError ? String(vo.lastError).slice(0, 52) : 'none', vo.lastError ? 'bad' : 'dim');
+  // The worst frames with what was happening: this is what tells you whether a
+  // stall was ARCore, the camera capture, or the game.
+  $('s-worst').innerHTML = (se.worst || []).length
+    ? '<b style="color:#8b96a5">worst frames</b><br>' + se.worst.map(w =>
+        `${w.ms} ms at ${w.atS}s — ${w.tracking ? 'tracking ok' : 'TRACKING LOST'}` +
+        `${w.captured ? ', camera capture' : ''}${w.fetching ? ', world in flight' : ''}` +
+        `${w.swapping ? ', swapping' : ''}, ${w.mobs} mobs`).join('<br>')
+    : '';
+
+  // ---- mobs ----
+  $('m-count').textContent = mo.count ?? '—';
+  set('m-arrived', mo.arrived ?? '—');
+  set('m-near', mo.nearest != null ? mo.nearest.toFixed(2) + ' m' : '—');
+  set('m-stop', mo.stopDistance != null ? mo.stopDistance + ' m' : '—', 'dim');
+  set('m-kills', mo.kills ?? '—', mo.kills ? 'ok' : 'dim');
+  set('m-hp', mo.hp ? `${mo.dying ?? 0} / ${mo.hp.join(' ')}` : '—', 'dim');
+
+  // ---- weapon ----
+  const wp = d.weapon || {};
+  $('wp-name').textContent = wp.name ? wp.name.replace('_', ' ') : '—';
+  set('wp-state', wp.swinging ? 'SWINGING' : 'ready', wp.swinging ? 'warn' : 'ok');
+  set('wp-swings', wp.swings ?? '—');
+  set('wp-input', `${wp.selectEvents ?? 0} / ${wp.domPointers ?? 0}`, 'dim');
+  set('wp-err', wp.error ? String(wp.error).slice(0, 40) : 'none', wp.error ? 'bad' : 'dim');
+  const sl = d.slash || {};
+  set('wp-thrown', sl.thrown ?? '—', 'dim');
+  set('wp-hits', `${sl.hits ?? 0} / ${sl.kills ?? 0}`, sl.kills ? 'ok' : 'dim');
+  set('wp-live', `${sl.live ?? 0} / ${sl.expired ?? 0}`, 'dim');
+
+  // ---- player and room ----
+  const pl = d.player || {}, rm = d.room || {};
+  $('p-hearts').textContent = pl.hearts != null ? '♥'.repeat(pl.hearts) + '♡'.repeat(Math.max(0, (pl.max || 3) - pl.hearts)) : '—';
+  $('p-hearts').style.color = pl.alive === false ? 'var(--bad)' : '#e23b3b';
+  set('p-immune', pl.immune ? `${(pl.immuneMs / 1000).toFixed(1)} s left` : (pl.alive === false ? 'OVERRUN' : 'none'),
+      pl.immune ? 'warn' : (pl.alive === false ? 'bad' : 'dim'));
+  set('p-hits', `${pl.hits ?? 0} / ${pl.blocked ?? 0}`, pl.hits ? 'warn' : 'dim');
+  set('p-over', pl.overruns ?? '—', pl.overruns ? 'bad' : 'dim');
+  const sc = pl.score || {};
+  set('p-score', sc.value != null ? `${sc.value} (best ${sc.best})` : '—', sc.value ? 'ok' : 'dim');
+  set('p-kills', `${sc.kills ?? 0} / ${sc.snapshots ?? 0}`, 'dim');
+  set('r-mood', (rm.mood || '—').toUpperCase(), rm.mood === 'calm' ? 'ok' : rm.mood ? 'warn' : '');
+  set('r-pending', rm.pending ? `to ${rm.pending.toUpperCase()}` : 'holding', rm.pending ? 'warn' : 'dim');
+  $('r-bar').style.width = ((rm.progress || 0) * 100) + '%';
+  set('r-mix', `${rm.hostile ?? 0} / ${rm.calm ?? 0} / ${rm.leaving ?? 0}`, 'dim');
+  set('r-changes', rm.changes ?? '—', 'dim');
+
+  // ---- camera frame ----
+  const cp = d.capture || {};
+  $('cap-cost').textContent = cp.enabled === false ? 'OFF (?noframe)' : (cp.captureMs != null && cp.captures ? cp.captureMs + ' ms' : '—');
+  $('cap-cost').style.color = (cp.maxCaptureMs || 0) > 30 ? 'var(--warn)' : '';
+  set('cap-ms', cp.captures ? `${cp.lastMs} / ${cp.maxMs} ms` : '—', (cp.maxMs || 0) > 30 ? 'warn' : 'ok');
+  set('cap-frame', cp.size ? `${cp.size} · ${((cp.lastBytes || 0) / 1024).toFixed(0)} kB · #${cp.captures}` : '—', 'dim');
+  set('cap-req', `${cp.posts ?? 0} (${cp.postFails ?? 0}) / ${cp.gets ?? 0} (${cp.getFails ?? 0})`, (cp.postFails || cp.getFails) ? 'warn' : 'dim');
+  set('cap-wait', cp.notReadyFrames ?? '—', 'dim');
+  set('cap-fetch', cp.lastFetchMs ? `${cp.lastFetchMs} ms via ${cp.lastSource || '?'}` : (cp.pending ? 'in flight…' : '—'), cp.pending ? 'warn' : 'dim');
+  set('cap-reason', cp.lastReason || (cp.error ? 'GL: ' + cp.error : 'none'), (cp.lastReason || cp.error) ? 'warn' : 'dim');
+  if (cp.captures && cp.captures !== window.__capSeen) {
+    window.__capSeen = cp.captures;
+    const im = $('cap-img'); im.style.display = 'block'; im.src = '/last-frame.jpg?t=' + Date.now();
+    im.onerror = () => { im.style.display = 'none'; };
+  }
+
+  // ---- handheld ----
+  const pd = d.controller || {}, ld = d.leds || {};
+  $('pad-state').textContent = pd.connected ? 'LIVE' : (pd.link === 'unsupported' ? 'n/a' : 'none');
+  $('pad-state').style.color = pd.connected ? 'var(--ok)' : 'var(--dim)';
+  set('pad-link', pd.link || '—', pd.link === 'open' ? 'ok' : 'dim');
+  set('pad-stick', pd.connected ? `${(pd.x ?? 0).toFixed(2)} / ${(pd.y ?? 0).toFixed(2)}` : '—');
+  set('pad-btn', pd.connected ? `${pd.atk ? 'ATK' : '·'} / ${pd.sw ? 'SW' : '·'}` : '—',
+      (pd.atk || pd.sw) ? 'warn' : '');
+  set('pad-sens', pd.sens != null ? `${pd.sens} → ${pd.sens > 3000 ? 'high' : 'normal'}` : '—');
+  set('pad-frames', pd.frames != null ? `${pd.frames} / ${pd.ageMs != null ? pd.ageMs + ' ms' : '—'}` : '—', 'dim');
+  set('pad-drops', pd.drops ?? '—', pd.drops ? 'warn' : 'dim');
+  set('pad-acts', `${wp.padSwings ?? 0} / ${cy.skips ?? 0}`, 'dim');
+  set('pad-target', d.target != null ? `#${d.target}` : 'none', 'dim');
+  const lv = ld.value || [0, 0, 0];
+  document.querySelectorAll('#pad-leds .lamp').forEach((el, i) => { el.style.opacity = 0.15 + 0.85 * (lv[i] || 0); });
+  set('pad-ledn', `${ld.sent ?? 0} / ${ld.failed ?? 0}`, ld.failed ? 'warn' : 'dim');
+}
+// ---- controls: queued on the server, collected by the headset on its next
+// telemetry POST (5 Hz), so they land within about 200 ms.
+const PRESETS_FALLBACK = ['min', 'low', 'normal', 'high', 'max'];
+let sensBuilt = null;
+function buildSensButtons(list, current) {
+  const names = Array.isArray(list) && list.length ? list : PRESETS_FALLBACK;
+  const key = names.join(',');
+  const box = $('sens-ctl');
+  if (sensBuilt !== key) {
+    sensBuilt = key;
+    for (const old of [...box.querySelectorAll('button')]) old.remove();
+    for (const n of names) {
+      const b = document.createElement('button');
+      b.textContent = n.toUpperCase();
+      b.dataset.preset = n;
+      b.addEventListener('click', () => send({ cmd: 'preset', preset: n }, 'sensitivity ' + n));
+      box.appendChild(b);
+    }
+  }
+  for (const b of box.querySelectorAll('button')) b.classList.toggle('on', b.dataset.preset === current);
+}
+
+async function send(body, what) {
+  const msg = $('cmdmsg');
+  try {
+    const r = await fetch('/command', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(body) });
+    const j = await r.json();
+    msg.textContent = r.ok ? `sent: ${what} — the headset picks it up on its next telemetry post`
+                           : `rejected: ${j.error || r.status}`;
+  } catch (e) {
+    msg.textContent = 'could not reach the server: ' + e;
+  }
+  clearTimeout(send._t);
+  send._t = setTimeout(() => { msg.textContent = ''; }, 4000);
+}
+
+for (const b of document.querySelectorAll('[data-trim]')) {
+  b.addEventListener('click', () => {
+    const db = parseFloat(b.dataset.trim);
+    if (db) send({ cmd: 'trim', db }, `trim ${db > 0 ? '+' : ''}${db} dB`);
+    else send({ cmd: 'trim', db: -currentTrim() }, 'trim reset');
+  });
+}
+function currentTrim() {
+  const m = /([-+]?[0-9.]+) dB/.exec($('mic-sens').textContent || '');
+  return m ? parseFloat(m[1]) : 0;
+}
+$('do-cal').addEventListener('click', () => send({ cmd: 'calibrate' }, 'calibrate'));
+$('do-reset').addEventListener('click', () => send({ cmd: 'resetcal' }, 'reset calibration'));
+buildSensButtons(null, null);
+
+// ---- the model traffic, as a conversation between the game and the models.
+// Read through whichever server this page came from (the Pi in the venue, the
+// Mac over adb); both proxy the pipeline service's /trace.
+let tracePaused = false, traceSeen = '', traceExpanded = false;
+// A short history of the frames the pipeline was given, so each exchange can
+// show its own photo rather than the most recent one.
+const FRAME_KEEP = 12;
+let frames = [];
+/** The frame taken closest before this exchange, within half a minute. */
+function frameNear(at) {
+  if (!at || !frames.length) return null;
+  let best = null;
+  for (const f of frames) {
+    const dt = at - f.at;
+    if (dt < -2 || dt > 30) continue;          // not this exchange's photo
+    if (!best || Math.abs(dt) < Math.abs(at - best.at)) best = f;
+  }
+  return best;
+}
+async function pollFrames() {
+  try {
+    const j = await (await fetch('/frames', { cache: 'no-store' })).json();
+    frames = Array.isArray(j.frames) ? j.frames : [];
+  } catch (e) { /* the thread still renders, just without photos */ }
+}
+const esc = t => String(t == null ? '' : t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const clock = ts => ts ? new Date(ts * 1000).toLocaleTimeString() : '';
+const ago = ts => { if (!ts) return ''; const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 90 ? `${s | 0}s ago` : s < 5400 ? `${(s / 60) | 0}m ago` : `${(s / 3600) | 0}h ago`; };
+const modelSide = leg => /gemini|vision/i.test(leg) ? 'gemini' : 'nemotron';
+const modelName = leg => /gemini|vision/i.test(leg) ? 'GEMINI' : 'NEMOTRON';
+
+function bubble(dir, who, name, text, stamp, opts = {}) {
+  const clip = !traceExpanded && text.length > 260 ? ' clip' : '';
+  return `<div class="msg ${dir}${opts.bad ? ' bad' : ''}">
+    <div class="who ${opts.bad ? 'err' : who}">${esc(name.slice(0, 4))}</div>
+    <div class="col">
+      <div class="name">${esc(name)}${opts.sub ? ' · ' + esc(opts.sub) : ''}</div>
+      <div class="bub${clip}">${esc(text) || '<em>(nothing recorded)</em>'}${opts.attach || ''}</div>
+      ${clip ? '<span class="more">show the whole thing</span>' : ''}
+      <div class="stamp">${esc(stamp)}</div>
+    </div>
+  </div>`;
+}
+
+async function pollTrace() {
+  if (tracePaused) return;
+  let j = null;
+  try { j = await (await fetch('/trace?n=8', { cache: 'no-store' })).json(); }
+  catch (e) { $('tr-status').textContent = 'could not reach this server: ' + e; return; }
+  if (!j || j.ok === false) {
+    $('tr-status').textContent = 'the pipeline service is not answering — ' +
+      ((j && j.error) || 'no reply') + ' (the game falls back to canned worlds)';
+    return;
+  }
+  const ex = (j.exchanges || []).slice().reverse();     // oldest first, like a thread
+  $('tr-status').textContent = ex.length
+    ? `${ex.length} of ${j.total_seen} exchanges`
+    : 'nothing said yet — take a snapshot on the phone';
+  $('tr-log').textContent = j.log ? j.log.replace(/^.*\//, '') : '';
+  await pollFrames();
+  const stamp = ex.map(e => `${e.at}:${e.status}`).join('|') +
+                frames.map(f => f.id).join(',') + (traceExpanded ? '+' : '');
+  if (stamp === traceSeen) return;
+  const box = $('thread');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  traceSeen = stamp;
+  let html = '', lastLeg = null;
+  for (const e of ex) {
+    const side = modelSide(e.leg), name = modelName(e.leg);
+    if (e.leg !== lastLeg) { html += `<div class="day">${esc(e.leg)} · ${esc(e.model)}</div>`; lastLeg = e.leg; }
+    // The vision leg's prompt carries the photo. Show the frame that THIS
+    // exchange actually used, matched by time, not whatever is newest.
+    const hasImage = /\[image:/.test(e.sent || '');
+    const shot = hasImage ? frameNear(e.at) : null;
+    const attach = !hasImage ? ''
+      : shot
+        ? `<div class="shot"><img src="/frame?id=${shot.id}" alt="the photo the world was built from"
+             onerror="this.parentElement.innerHTML='&lt;div class=\\'cap missing\\'&gt;the photo is no longer kept&lt;/div&gt;'">
+             <div class="cap">the shot, ${(shot.bytes / 1024).toFixed(0)} kB · tap to enlarge</div></div>`
+        : `<div class="shot"><div class="cap missing">a photo was sent; it is older than the last ${FRAME_KEEP} kept</div></div>`;
+    html += bubble('out', 'game', 'GAME', (e.sent || '').replace(/\[image:[^\]]*\]/g, '').trim(),
+                   clock(e.at), { attach, sub: 'asking' });
+    const bad = !!e.error || (e.status && e.status >= 400);
+    html += bubble('in', side, name, bad ? (e.error || `HTTP ${e.status}`) : e.received,
+                   `${clock(e.at)} · ${e.elapsed_ms ?? '?'} ms · ${ago(e.at)}`,
+                   { bad, sub: bad ? 'failed' : 'replying' });
+  }
+  box.innerHTML = html;
+  for (const img of box.querySelectorAll('.shot img')) {
+    img.addEventListener('click', () => img.parentElement.classList.toggle('big'));
+  }
+  for (const m of box.querySelectorAll('.more')) {
+    m.addEventListener('click', () => {
+      const b = m.parentElement.querySelector('.bub');
+      b.classList.toggle('clip');
+      m.textContent = b.classList.contains('clip') ? 'show the whole thing' : 'shorten';
+    });
+  }
+  if (atBottom) box.scrollTop = box.scrollHeight;       // follow, unless you scrolled up
+}
+$('tr-refresh').addEventListener('click', () => { traceSeen = ''; pollTrace(); });
+$('tr-pause').addEventListener('click', e => {
+  tracePaused = !tracePaused;
+  e.target.textContent = tracePaused ? 'resume' : 'pause';
+});
+$('tr-expand').addEventListener('click', e => {
+  traceExpanded = !traceExpanded; traceSeen = '';
+  e.target.textContent = traceExpanded ? 'shorten prompts' : 'show full prompts';
+  pollTrace();
+});
+setInterval(pollTrace, 3000);
+pollTrace();
+
+setInterval(poll, 200);
+poll();
+</script>
+</body></html>

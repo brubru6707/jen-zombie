@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stage 2 — mobs</title><link rel="stylesheet" href="css/ar.css">
+</head><body class="launch">
+<h1>Stage 2 — mobs</h1>
+<div class="sub">Six enemies spawn in a ring on the floor around you, walk in,
+and stop at arm's length (70 cm). Open space only — no walls, no grid, no
+collision geometry. Tap to re-spawn the ring around wherever you are standing.</div>
+<button id="enter">ENTER AR</button>
+<div id="err" class="sub"></div>
+<div id="hud"><button id="exit">EXIT</button></div>
+<script type="module">
+import { THREE, Hud, Fps, log, warn, startAR, makeRenderer, basicScene, postResult }
+  from './js/arkit.js';
+import { spawnRing, STOP_DISTANCE } from './js/mobs.js';
+
+const hud = new Hud('hud');
+const fps = new Fps();
+const WORLD = { count: 6, radius: 2.6, speedScale: 1.0, bruteBias: 0.18 };
+
+document.getElementById('enter').addEventListener('click', run);
+
+async function run() {
+  const btn = document.getElementById('enter');
+  btn.disabled = true; btn.textContent = 'STARTING…';
+  let session;
+  try {
+    session = await startAR({ overlayRoot: document.getElementById('hud') });
+  } catch (e) {
+    document.getElementById('err').textContent = String(e);
+    btn.disabled = false; btn.textContent = 'ENTER AR';
+    return;
+  }
+  document.body.classList.remove('launch');
+  document.getElementById('hud').classList.add('on');
+  document.getElementById('exit').classList.add('on');
+  document.getElementById('exit').onclick = () => { try { session.end(); } catch (e) {} };
+
+  const renderer = makeRenderer(session);
+  const { scene, camera } = basicScene();
+  await renderer.xr.setSession(session);
+
+  let mobs = [];
+  let spawned = false;
+  let respawnRequested = false;
+  let lastT = 0, startedAt = 0, lastPost = 0, trackingLost = 0, minSeen = 99;
+  const playerPos = new THREE.Vector3();
+
+  session.addEventListener('select', () => { respawnRequested = true; });
+  session.addEventListener('end', onEnd);
+  hud.message('Hold still a moment while tracking settles…');
+
+  function clearMobs() {
+    for (const m of mobs) m.dispose(scene);
+    mobs = [];
+  }
+  function spawnAround(x, z) {
+    clearMobs();
+    // Finding 1: feet sit on the local-floor plane (y = 0), never on a
+    // hit-test point, so they do not sink or float on patterned floors.
+    mobs = spawnRing(scene, x, z, WORLD);
+    spawned = true;
+    minSeen = 99;
+    const kinds = mobs.reduce((a, m) => (a[m.kind] = (a[m.kind] || 0) + 1, a), {});
+    log('spawned', mobs.length, 'mobs at', x.toFixed(2), z.toFixed(2), kinds);
+    hud.message(`${mobs.length} inbound — walk around, tap to re-spawn`, 'ok');
+  }
+
+  renderer.setAnimationLoop((t, frame) => {
+    try {
+      const f = fps.tick(t);
+      const dt = lastT ? Math.min((t - lastT) / 1000, 0.1) : 0;
+      lastT = t;
+      if (!frame) { renderer.render(scene, camera); return; }
+      const refSpace = renderer.xr.getReferenceSpace();
+      if (!refSpace) { renderer.render(scene, camera); return; }
+
+      const viewerPose = frame.getViewerPose(refSpace);
+      if (!viewerPose) {
+        trackingLost++;
+        hud.set('tracking', 'LOST', 'bad');
+        renderer.render(scene, camera);
+        return;
+      }
+      hud.set('tracking', 'ok', 'ok');
+      playerPos.setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
+
+      if (!spawned && t > 1200) {
+        spawnAround(playerPos.x, playerPos.z);
+        startedAt = t;
+      }
+      if (respawnRequested) {
+        respawnRequested = false;
+        if (spawned) spawnAround(playerPos.x, playerPos.z);
+      }
+
+      let nearest = 99, arrived = 0;
+      for (const m of mobs) {
+        m.step(dt, playerPos.x, playerPos.z, t, mobs);
+        if (m.distance < nearest) nearest = m.distance;
+        if (m.arrived) arrived++;
+      }
+      if (nearest < minSeen) minSeen = nearest;
+
+      hud.set('mobs', `${mobs.length}  (${arrived} closed in)`);
+      hud.set('nearest', mobs.length ? `${nearest.toFixed(2)} m` : '—',
+              nearest < STOP_DISTANCE + 0.05 ? 'warn' : '');
+      hud.set('closest ever', mobs.length ? `${minSeen.toFixed(2)} m` : '—',
+              minSeen < STOP_DISTANCE - 0.10 ? 'bad' : 'ok');
+      hud.set('player y', `${playerPos.y.toFixed(2)} m`);
+      hud.set('fps', f || '—');
+
+      if (spawned && t - lastPost > 5000) {
+        lastPost = t;
+        postResult('stage2', {
+          stage: 2, mobs: mobs.length, arrived, nearest: +nearest.toFixed(3),
+          closestEver: +minSeen.toFixed(3), armLength: STOP_DISTANCE,
+          playerY: +playerPos.y.toFixed(3), fps: fps.value,
+          trackingLostFrames: trackingLost,
+          elapsedS: +((t - startedAt) / 1000).toFixed(1),
+          kinds: mobs.reduce((a, m) => (a[m.kind] = (a[m.kind] || 0) + 1, a), {}),
+        });
+      }
+      renderer.render(scene, camera);
+    } catch (e) {
+      warn('frame error (ignored):', e);   // nothing may raise into the loop
+    }
+  });
+
+  function onEnd() {
+    try {
+      renderer.setAnimationLoop(null);
+      clearMobs();
+      document.getElementById('hud').classList.remove('on');
+      document.getElementById('exit').classList.remove('on');
+      document.body.classList.add('launch');
+      btn.disabled = false; btn.textContent = 'ENTER AR';
+      document.getElementById('err').textContent =
+        `Last run: closest approach ${minSeen.toFixed(2)} m (target ${STOP_DISTANCE} m), ` +
+        `${fps.value} fps, ${trackingLost} lost-tracking frames.`;
+      postResult('stage2', { stage: 2, final: true, closestEver: minSeen,
+        armLength: STOP_DISTANCE, fps: fps.value, trackingLostFrames: trackingLost });
+      log('session ended; closest', minSeen.toFixed(2));
+    } catch (e) { warn('onEnd:', e); }
+  }
+}
+</script>
+</body></html>

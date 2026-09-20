@@ -134,11 +134,19 @@ Reply with ONLY a JSON object, no prose, no markdown fences, with exactly these 
   "brute_bias":   float 0.0-0.5  (share of big slow enemies)
   "hp_bonus":     int 0-3        (extra enemy hit points)'''
     if barks:
-        fields += ('\n  "barks":        object mapping each enemy type '
-                   f'({", ".join(ENEMY_TYPES)}) to an array of 2-3 short taunt lines'
-                   '\nEach bark line MUST be 8 words or fewer and in character for the '
+        fields += ('\n  "barks":        object with FOUR keys: '
+                   f'{", ".join(ENEMY_TYPES)} and "calm".'
+                   f'\n                  The first three ({", ".join(ENEMY_TYPES)}) are the '
+                   'undead: 2-3 short menacing lines each.'
+                   '\n                  "calm" is 2-3 lines spoken by the PEACEFUL locals who '
+                   'live in this\n                  place -- a person or animal that belongs '
+                   'here and means no harm.\n                  They are wary, weary or wry, '
+                   'never threatening: they warn, greet,\n                  complain about the '
+                   'weather, or mention what they were doing.'
+                   '\nEvery line MUST be 8 words or fewer and in character for the '
                    'chosen biome\n(a beach zombie says beach things, a lab zombie says '
-                   'lab things).')
+                   'lab things, and the calm\nlocals of a farm sound like farmers, not like '
+                   'the zombies).')
     return head + fields
 
 

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>jenzombies AR</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+  html,body{height:100%;background:#000;overflow:hidden;color:#fff;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  #cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#111;z-index:0}
+  #c{position:fixed;inset:0;width:100%;height:100%;z-index:1}
+  .hud{position:fixed;top:0;left:0;right:0;z-index:3;padding:14px 16px;
+    display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none}
+  #hearts{display:flex;gap:8px}
+  .heart{width:32px;height:29px}
+  #timer{text-align:right;line-height:1.12;text-shadow:0 2px 4px #000}
+  #timer .lab{font-size:11px;letter-spacing:.14em;color:#a9bccb;text-transform:uppercase}
+  #timer .clock{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums}
+  #timer.ready .clock{color:#5be08a;animation:pulse .7s infinite alternate}
+  #timer .biome{font-size:11px;color:#cdd8e2}
+  @keyframes pulse{from{opacity:.4}to{opacity:1}}
+  #conn{position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:4;
+    font-size:11px;padding:3px 10px;border-radius:999px;background:#3a1f22;color:#ec5b5b;
+    border:1px solid #5a2b2f;text-shadow:none}
+  #conn.on{background:#12321f;color:#37d67a;border-color:#1e5233}
+  #start{position:fixed;inset:0;z-index:9;display:flex;flex-direction:column;gap:14px;
+    align-items:center;justify-content:center;background:#0b0d10;text-align:center;padding:24px}
+  #start h1{font-size:26px;letter-spacing:.04em}
+  #start p{font-size:14px;color:#aab6c2;max-width:320px;line-height:1.5}
+  #start button{margin-top:8px;font:inherit;font-size:16px;font-weight:700;color:#04240f;
+    background:#5be08a;border:0;border-radius:12px;padding:14px 26px}
+  #flash{position:fixed;inset:0;background:#fff;opacity:0;z-index:5;pointer-events:none}
+  #banner{position:fixed;left:50%;top:42%;transform:translate(-50%,-50%);z-index:6;
+    text-align:center;pointer-events:none;text-shadow:0 3px 6px #000}
+  #banner .big{font-size:32px;font-weight:800}#banner .sub{font-size:13px;color:#dfe7ee;margin-top:6px}
+</style>
+</head>
+<body>
+<video id="cam" autoplay playsinline muted></video>
+<canvas id="c"></canvas>
+<div id="conn">connecting</div>
+<div class="hud">
+  <div id="hearts"></div>
+  <div id="timer"><div class="lab">next scan</div><div class="clock">0:30</div><div class="biome">scanning…</div></div>
+</div>
+<div id="flash"></div>
+<div id="banner"></div>
+<div id="start">
+  <h1>JENZOMBIES · AR</h1>
+  <p>Point your phone at the room. Zombies invade your space — aim with the joystick, fire with the button. Scan the room when the timer is ready.</p>
+  <button id="go">Enable camera &amp; play</button>
+  <p id="err" style="color:#ec5b5b"></p>
+</div>
+<script>
+(function(){
+const cam=document.getElementById('cam'), cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W=0,H=0,DPR=Math.min(2,window.devicePixelRatio||1);
+function resize(){W=cv.clientWidth;H=cv.clientHeight;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);}
+addEventListener('resize',resize);resize();
+
+// ---- controller stream (Server-Sent Events: works over the accepted self-signed
+// cert, unlike WebSocket which Chrome refuses for wss:// on a self-signed origin)
+const input={x:0,y:0,sw:0,atk:0,sens:2048,connected:false,prevAtk:0,prevSens:2048};
+function connect(){
+  const es=new EventSource('/events');
+  es.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.t==='state'){
+    input.x=m.x;input.y=m.y;input.sw=m.sw;input.atk=m.atk;input.sens=m.sens;input.connected=m.connected;}}catch(_){}}
+  es.onerror=()=>{input.connected=false;/* EventSource auto-reconnects */};
+}
+connect();
+
+// ---- camera
+async function startCam(){
+  const err=document.getElementById('err');
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    cam.srcObject=s; await cam.play();
+    document.getElementById('start').style.display='none';
+    running=true; showBanner('JENZOMBIES','aim: stick · fire: button · scan: sens',2.2);
+  }catch(e){
+    err.textContent='Camera blocked: '+e.name+'. Make sure you opened this over https and allowed the camera.';
+  }
+}
+document.getElementById('go').addEventListener('click',startCam);
+
+// ---- biomes the scan reveals (placeholder for the vision/Nemotron read)
+const BIOMES=['meadow','desert','snowfield','lab','city ruins','forest'];
+let biomeIdx=0;
+
+// ---- game state
+let running=false;
+const aim={x:0,y:0};            // reticle position
+let mobs=[], parts=[], hearts=3, score=0, over=false, t=0;
+const SCAN_PERIOD=30; let scanLeft=SCAN_PERIOD, scanReady=false;
+function reset(){aim.x=W/2;aim.y=H/2;mobs=[];parts=[];hearts=3;score=0;over=false;scanLeft=SCAN_PERIOD;scanReady=false;renderHearts();}
+// (reset() is called at the very bottom, after HEART/renderHearts exist)
+
+function spawn(){
+  // zombies appear at a random spot in the room and creep toward the centre (you)
+  const a=Math.random()*6.28, d=Math.max(W,H)*0.55;
+  mobs.push({x:W/2+Math.cos(a)*d, y:H/2+Math.sin(a)*d, s:0.5+Math.random()*0.3,
+             spd:10+Math.random()*16, hp:1, wob:Math.random()*6.28});
+}
+function burst(x,y,col,n){for(let i=0;i<n;i++){const a=Math.random()*6.28,s=60+Math.random()*140;
+  parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.4+Math.random()*.3,col});}}
+
+let bannerT=0;
+function showBanner(big,sub,secs){document.getElementById('banner').innerHTML=`<div class="big">${big}</div><div class="sub">${sub}</div>`;bannerT=secs;}
+function doScan(){
+  scanLeft=SCAN_PERIOD;scanReady=false;
+  biomeIdx=(biomeIdx+1)%BIOMES.length;
+  document.querySelector('#timer .biome').textContent=BIOMES[biomeIdx];
+  const f=document.getElementById('flash');f.style.transition='none';f.style.opacity='.85';
+  requestAnimationFrame(()=>{f.style.transition='opacity .5s';f.style.opacity='0';});
+  // themed surge after a scan
+  for(let i=0;i<4;i++)spawn();
+  showBanner('SCAN COMPLETE',BIOMES[biomeIdx]+' — threat rising',1.3);
+}
+
+// ---- hearts
+const HEART=col=>`<svg class="heart" viewBox="0 0 11 10" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg"><path fill="${col}" d="M2 0h2v1h1v1h1V1h1V0h2v1h1v3h-1v1h-1v1h-1v1h-1v1H5v1H4V8H3V7H2V6H1V5H0V1h1z"/></svg>`;
+function renderHearts(){let h='';for(let i=0;i<3;i++)h+=HEART(i<hearts?'#e23b3b':'#3a2020');document.getElementById('hearts').innerHTML=h;}
+reset();   // now safe: HEART + renderHearts are defined
+
+// ---- loop
+let last=performance.now();
+function frame(now){const dt=Math.min(.05,(now-last)/1000);last=now;t+=dt;update(dt);draw();requestAnimationFrame(frame);}
+function update(dt){
+  const cel=document.getElementById('conn');cel.className=input.connected?'on':'';
+  cel.textContent=input.connected?'controller live':'no controller';
+  if(!running)return;
+
+  // scan timer
+  if(!over){
+    if(!scanReady){scanLeft-=dt;if(scanLeft<=0){scanLeft=0;scanReady=true;showBanner('SCAN READY','flick SENS to scan the room',1.4);}}
+    if(scanReady && input.sens>3000 && input.prevSens<=3000) doScan();
+    input.prevSens=input.sens;
+  }
+  const tm=document.getElementById('timer');
+  tm.className=scanReady?'ready':'';
+  tm.querySelector('.clock').textContent=scanReady?'SCAN':('0:'+String(Math.ceil(scanLeft)).padStart(2,'0'));
+  if(bannerT>0){bannerT-=dt;if(bannerT<=0)document.getElementById('banner').innerHTML='';}
+
+  if(over){if(input.atk&&!input.prevAtk)reset();input.prevAtk=input.atk;return;}
+
+  // reticle moves with the stick
+  const sp=340;
+  aim.x=Math.max(0,Math.min(W,aim.x+input.x*sp*dt));
+  aim.y=Math.max(0,Math.min(H,aim.y+input.y*sp*dt));
+
+  // fire
+  if(input.atk&&!input.prevAtk){
+    let best=null,bd=1e9;
+    for(const m of mobs){const d=Math.hypot(m.x-aim.x,m.y-aim.y);if(d<48*m.s+22&&d<bd){bd=d;best=m;}}
+    if(best){best.hp=0;score++;burst(best.x,best.y,'#7bd142',14);}
+    else burst(aim.x,aim.y,'#ffffff',5);
+  }
+  input.prevAtk=input.atk;
+
+  if(Math.random()<dt*(0.8+t*0.012))spawn();
+  for(const m of mobs){
+    const a=Math.atan2(H/2-m.y,W/2-m.x);m.wob+=dt*7;m.s+=dt*0.06;
+    m.x+=Math.cos(a)*m.spd*dt+Math.cos(m.wob)*10*dt;
+    m.y+=Math.sin(a)*m.spd*dt+Math.sin(m.wob)*10*dt;
+    if(Math.hypot(m.x-W/2,m.y-H/2)<40||m.s>2.4){m.hp=0;burst(m.x,m.y,'#ec5b5b',16);
+      hearts--;renderHearts();shake=.25;if(hearts<=0){over=true;showBanner('OVERRUN','press FIRE to retry',99);}}
+  }
+  mobs=mobs.filter(m=>m.hp>0);
+  for(const p of parts){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.9;p.vy*=.9;p.life-=dt;}
+  parts=parts.filter(p=>p.life>0);
+}
+let shake=0;
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  if(shake>0){shake-=0.016;ctx.save();ctx.translate((Math.random()-.5)*shake*40,(Math.random()-.5)*shake*40);}
+  // subtle scanlines / vignette to sell the AR HUD
+  for(const p of parts){ctx.globalAlpha=Math.max(0,p.life*2);ctx.fillStyle=p.col;ctx.fillRect(p.x-2,p.y-2,4,4);}
+  ctx.globalAlpha=1;
+  for(const m of mobs)pixMob(m.x,m.y,m.s);
+  if(running&&!over)reticle(aim.x,aim.y);
+  // damage vignette
+  if(hearts<=1&&!over){ctx.fillStyle='rgba(200,20,20,'+(0.12+0.06*Math.sin(t*6))+')';ctx.fillRect(0,0,W,H);}
+  if(shake>0)ctx.restore();
+}
+function pixMob(cx,cy,s){
+  ctx.save();ctx.translate(cx,cy);ctx.scale(s,s);
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.beginPath();ctx.ellipse(0,16,12,4,0,0,6.28);ctx.fill();
+  ctx.fillStyle='#6ea23a';ctx.fillRect(-8,-12,16,16);
+  ctx.fillStyle='#3f5c22';ctx.fillRect(-8,2,16,6);
+  ctx.fillStyle='#c9302c';ctx.fillRect(-5,-7,3,3);ctx.fillRect(2,-7,3,3);
+  ctx.fillStyle='#20140f';ctx.fillRect(-3,-1,6,2);
+  ctx.restore();
+}
+function reticle(x,y){
+  ctx.strokeStyle='#5be08a';ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,18,0,6.28);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x-26,y);ctx.lineTo(x-8,y);ctx.moveTo(x+8,y);ctx.lineTo(x+26,y);
+  ctx.moveTo(x,y-26);ctx.lineTo(x,y-8);ctx.moveTo(x,y+8);ctx.lineTo(x,y+26);ctx.stroke();
+  ctx.fillStyle='#5be08a';ctx.fillRect(x-1.5,y-1.5,3,3);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
