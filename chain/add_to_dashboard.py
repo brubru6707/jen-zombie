@@ -33,7 +33,9 @@ CARD = """  <div class="card">
     <div class="r"><span class="k">token balance</span><span class="v" id="c-balance">&mdash;</span></div>
     <div class="r"><span class="k">settled</span><span class="v" id="c-total">&mdash;</span></div>
     <div class="r"><span class="k">failed</span><span class="v" id="c-failed">&mdash;</span></div>
-    <div class="r"><span class="k">last signature</span><span class="v" id="c-sig" style="font-size:11px">&mdash;</span></div>
+    <div class="r"><span class="k">token / mint</span><span class="v"><a id="c-mint" href="#" target="_blank" rel="noopener" style="color:#4aa3ff">&mdash;</a></span></div>
+    <div style="margin-top:6px"><div class="k" style="font-size:12px">last transaction</div>
+      <div id="c-sig" style="font-size:11px;color:#8b96a5;word-break:break-all;line-height:1.35">&mdash;</div></div>
     <div style="margin-top:8px"><a id="c-solscan" href="#" target="_blank" rel="noopener"
        style="display:block;padding:10px;border:1px solid #1f6feb;border-radius:10px;
               text-align:center;font-weight:700;text-decoration:none;color:#4aa3ff">OPEN IN SOLSCAN</a></div>
@@ -58,7 +60,12 @@ async function pollChain() {
     set2('c-balance', d.token.balance === null ? '\\u2014' : `${d.token.balance} ${d.token.name}`, 'ok');
     set2('c-total', `${d.totals.settled_runs} runs, ${d.totals.settled_points} pts`, 'dim');
     set2('c-failed', String(d.totals.failed), d.totals.failed ? 'bad' : 'dim');
-    set2('c-sig', d.last ? d.last.signature : '\\u2014', 'dim');
+    // Not set2(): this one is a block that wraps, not a right-aligned value.
+    const sg = document.getElementById('c-sig');
+    if (sg) sg.textContent = d.last ? d.last.signature : 'no transaction yet';
+    const mn = document.getElementById('c-mint');
+    if (mn) { mn.textContent = d.token.mint ? (d.token.mint.slice(0, 8) + '\\u2026' + d.token.mint.slice(-6)) : '\\u2014';
+              mn.href = d.token.mint_url || '#'; }
     const a = document.getElementById('c-solscan');
     if (a) { a.href = (d.last && d.last.url) || '#'; a.style.opacity = d.last ? 1 : 0.35; }
   } catch (e) { /* a shape change must not break the rest of the dashboard */ }

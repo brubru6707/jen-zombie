@@ -540,6 +540,18 @@ async function run(flat = false) {
     clearTimeout(wd);
   }
   document.body.classList.toggle('flat', !!flat);
+  if (flat) {
+    // An immersive session is fullscreen by definition; a flat page is not, so
+    // Chrome's address bar sits over the top of the game. Best effort: it
+    // needs a user activation, which the button tap supplies and a dashboard
+    // command does not, so a refusal is normal and must not break the start.
+    try {
+      const el = document.documentElement;
+      const go = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (go) Promise.resolve(go.call(el, { navigationUI: 'hide' }))
+        .catch(e => warn('fullscreen refused (no gesture?):', e && e.name || e));
+    } catch (e) { warn('fullscreen unavailable (ignored):', e); }
+  }
   currentMode = flat ? '2d' : 'ar';
   currentSession = session;
   document.body.classList.remove('launch');
@@ -852,14 +864,16 @@ async function run(flat = false) {
       const x = (nx * 0.5 + 0.5) * window.innerWidth;
       const y = (-ny * 0.5 + 0.5) * window.innerHeight;
       const arrow = !edge ? '' : (behind ? '\u21ba' : (nx <= -0.92 ? '\u25c0' : (nx >= 0.92 ? '\u25b6' : (ny >= 0.92 ? '\u25b2' : '\u25bc'))));
-      const sig = saying.text + '|' + arrow + '|' + (saying.spoken ? '1' : '0');
+      const sig = saying.text + '|' + arrow + '|' + (saying.failed ? 'F' : (saying.spoken ? '1' : '0'));
       if (bubbleEl.dataset.line !== sig) {
         bubbleEl.dataset.line = sig;
-        // A line with no audio still gets said, and says why -- unless it was
-        // muted on purpose, which is not a failure worth captioning.
-        const why = voices.muted ? '' : (saying.spoken ? '' :
+        // A line whose audio FAILED says why. A line whose audio is still on
+        // its way says nothing: captioning "(no voice)" for the ~800 ms a
+        // fetch takes, then quietly removing it, is a lie told every line.
+        // Muting is deliberate and is not a failure either.
+        const why = (voices.muted || !saying.failed) ? '' :
           '<span class="mute">(no voice: ' +
-          String(voices.lastError || 'audio unavailable').slice(0, 48) + ')</span>');
+          String(voices.lastError || 'audio unavailable').slice(0, 48) + ')</span>';
         bubbleEl.innerHTML = (arrow ? '<span class="to">' + arrow + '</span>' : '') +
           saying.text.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) +
           why + '<i class="tail"></i>';
@@ -867,9 +881,18 @@ async function run(flat = false) {
         bubbleEl.classList.toggle('hostile', saying.role !== 'calm');
         bubbleEl.classList.toggle('edge', !!edge);
       }
+      // Clamping the ANCHOR is not enough: the bubble is translated
+      // (-50%, -100%) and can be 46vw wide, so its BOX still hung off the
+      // screen. Measured on the phone as onScreen:false. Clamp the box.
       bubbleEl.style.left = Math.round(x) + 'px';
       bubbleEl.style.top = Math.round(Math.max(44, y)) + 'px';
       bubbleEl.classList.add('on');
+      const bw = bubbleEl.offsetWidth, bh = bubbleEl.offsetHeight;
+      const M = 8;                                   // keep off the very edge
+      const lx = Math.min(Math.max(x, bw / 2 + M), window.innerWidth - bw / 2 - M);
+      const ly = Math.min(Math.max(y, bh + M), window.innerHeight - M);
+      bubbleEl.style.left = Math.round(lx) + 'px';
+      bubbleEl.style.top = Math.round(ly) + 'px';
       bubbleShown++; if (edge) bubbleEdge++;
     } catch (e) { bubbleEl.classList.remove('on'); bubbleFail++; }
   }
@@ -1235,6 +1258,7 @@ async function run(flat = false) {
     try {
       renderer.setAnimationLoop(null);
       if (flat) {
+        try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
         try { backdrop.dispose(); } catch (e) {}
         try { removeEventListener('resize', renderer._jzResize); } catch (e) {}
         try { renderer.domElement.remove(); renderer.dispose(); } catch (e) {}

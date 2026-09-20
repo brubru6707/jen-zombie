@@ -244,6 +244,26 @@
     <div class="r"><span class="k">lamps g / y / r</span><span class="v" id="pad-leds"><span class="lamp g"></span><span class="lamp y"></span><span class="lamp r"></span></span></div>
     <div class="r"><span class="k">led posts sent / failed</span><span class="v" id="pad-ledn">—</span></div>
   </div>
+
+
+<!-- jz-chain-card -->
+  <div class="card">
+    <h2>ON CHAIN &middot; SOLANA DEVNET</h2>
+    <div class="r"><span class="k">unsettled score</span><span class="v" id="c-unsettled">&mdash;</span></div>
+    <div class="r"><span class="k">token balance</span><span class="v" id="c-balance">&mdash;</span></div>
+    <div class="r"><span class="k">settled</span><span class="v" id="c-total">&mdash;</span></div>
+    <div class="r"><span class="k">failed</span><span class="v" id="c-failed">&mdash;</span></div>
+    <div class="r"><span class="k">token / mint</span><span class="v"><a id="c-mint" href="#" target="_blank" rel="noopener" style="color:#4aa3ff">&mdash;</a></span></div>
+    <div style="margin-top:6px"><div class="k" style="font-size:12px">last transaction</div>
+      <div id="c-sig" style="font-size:11px;color:#8b96a5;word-break:break-all;line-height:1.35">&mdash;</div></div>
+    <div style="margin-top:8px"><a id="c-solscan" href="#" target="_blank" rel="noopener"
+       style="display:block;padding:10px;border:1px solid #1f6feb;border-radius:10px;
+              text-align:center;font-weight:700;text-decoration:none;color:#4aa3ff">OPEN IN SOLSCAN</a></div>
+    <div class="ctl" style="margin-top:8px"><button id="c-settle">SETTLE NOW</button>
+      <span class="v" id="c-msg" style="font-size:12px">&mdash;</span></div>
+  </div>
+<!-- jz-chain-card -->
+
   <div class="card wide">
     <h2>The game talking to the models</h2>
     <div class="trace-head">
@@ -638,5 +658,45 @@ pollTrace();
 
 setInterval(poll, 200);
 poll();
+
+<!-- jz-chain-card -->
+// ---- on-chain settlement, read from the Mac-side service over CORS. --------
+// Entirely optional: if the service is not running every field reads as a dash
+// and nothing else on this page is affected.
+const CHAIN_API = 'http://localhost:8100/api';
+async function pollChain() {
+  const set2 = (id, t, cls) => { const e = document.getElementById(id); if (!e) return;
+                                 e.textContent = t; e.className = 'v' + (cls ? ' ' + cls : ''); };
+  let d = null;
+  try { d = await (await fetch(CHAIN_API, { cache: 'no-store' })).json(); }
+  catch (e) { set2('c-unsettled', 'service not running', 'dim'); return; }
+  try {
+    set2('c-unsettled', String(d.run.unsettled), d.run.unsettled ? 'warn' : 'dim');
+    set2('c-balance', d.token.balance === null ? '\u2014' : `${d.token.balance} ${d.token.name}`, 'ok');
+    set2('c-total', `${d.totals.settled_runs} runs, ${d.totals.settled_points} pts`, 'dim');
+    set2('c-failed', String(d.totals.failed), d.totals.failed ? 'bad' : 'dim');
+    // Not set2(): this one is a block that wraps, not a right-aligned value.
+    const sg = document.getElementById('c-sig');
+    if (sg) sg.textContent = d.last ? d.last.signature : 'no transaction yet';
+    const mn = document.getElementById('c-mint');
+    if (mn) { mn.textContent = d.token.mint ? (d.token.mint.slice(0, 8) + '\u2026' + d.token.mint.slice(-6)) : '\u2014';
+              mn.href = d.token.mint_url || '#'; }
+    const a = document.getElementById('c-solscan');
+    if (a) { a.href = (d.last && d.last.url) || '#'; a.style.opacity = d.last ? 1 : 0.35; }
+  } catch (e) { /* a shape change must not break the rest of the dashboard */ }
+}
+{
+  const b = document.getElementById('c-settle');
+  if (b) b.addEventListener('click', async () => {
+    const m = document.getElementById('c-msg');
+    try {
+      const j = await (await fetch(CHAIN_API.replace(/\/api$/, '/settle'), { method: 'POST' })).json();
+      if (m) m.textContent = j.ok ? `queued ${j.amount}` : (j.error || 'nothing to settle');
+    } catch (e) { if (m) m.textContent = 'service not running'; }
+    pollChain();
+  });
+}
+pollChain(); setInterval(pollChain, 2000);
+<!-- jz-chain-card -->
 </script>
 </body></html>

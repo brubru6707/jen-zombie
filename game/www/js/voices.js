@@ -196,7 +196,8 @@ export class Voices {
       this.used.add(norm(raw));       // retired BEFORE any truncation, so the
       const text = String(raw).slice(0, VOICE.maxChars);   // key matches next time
       const role = mob.mood === 'calm' ? 'calm' : (mob.kind || 'walker');
-      this.current = { mob, text, role, until: now + VOICE.showMs, spoken: false };
+      this.current = { mob, text, role, until: now + VOICE.showMs,
+                     spoken: false, failed: false, pending: true };
       this.lines++;
       this.lastLine = { text, role, at: now };
       this._say(text, role);
@@ -209,14 +210,27 @@ export class Voices {
 
   /** Fetch and play one line. Never throws, never blocks the frame. */
   _say(text, role) {
-    if (this.muted) { this.silent++; return; }   // shown, never sounded
-    if (!this.fetch || !this.audioFactory) { this.silent++; return; }
+    if (this.muted) {
+      // Muted on purpose is not a failure and must never be captioned as one.
+      this.silent++;
+      if (this.current) { this.current.pending = false; this.current.muted = true; }
+      return;
+    }
+    if (!this.fetch || !this.audioFactory) {
+      this.silent++;
+      if (this.current) { this.current.pending = false; this.current.failed = true; }
+      return;
+    }
     this._busy = true;
     const t0 = this.now();
     const url = `${this.url}?role=${encodeURIComponent(role)}&text=${encodeURIComponent(text)}`;
     let req;
     try { req = this.fetch(url, { cache: 'force-cache' }); }
-    catch (e) { this._busy = false; this.failures++; this.lastError = String(e); return; }
+    catch (e) {
+      this._busy = false; this.failures++; this.lastError = String(e);
+      if (this.current) { this.current.pending = false; this.current.failed = true; }
+      return;
+    }
     Promise.resolve(req)
       .then(r => {
         if (!r || !r.ok) {
@@ -234,6 +248,7 @@ export class Voices {
       .catch(e => {
         this.failures++; this.silent++;
         this.lastError = String(e && e.message || e);
+        if (this.current) { this.current.pending = false; this.current.failed = true; }
         this.warn('no audio for this line (it is still shown):', this.lastError);
       })
       .finally(() => { this._busy = false; });
@@ -254,7 +269,11 @@ export class Voices {
         if (this._audio === audio) this._audio = null;
       };
       audio.addEventListener('ended', done);
-      audio.addEventListener('error', () => { this.failures++; done(); });
+      audio.addEventListener('error', () => {
+        this.failures++;
+        if (this.current) { this.current.pending = false; this.current.failed = true; }
+        done();
+      });
       audio.addEventListener('loadedmetadata', () => {
         // Now the real length is known, hold the mic for exactly that long.
         const ms = (audio.duration || 0) * 1000;
@@ -271,10 +290,11 @@ export class Voices {
         this._suppressExact(0);
       });
       this.spoken++;
-      if (this.current) this.current.spoken = true;
+      if (this.current) { this.current.spoken = true; this.current.pending = false; }
     } catch (e) {
       this.failures++;
       this.lastError = String(e);
+      if (this.current) { this.current.pending = false; this.current.failed = true; }
       this._suppressExact(0);
     }
   }
@@ -298,6 +318,8 @@ export class Voices {
              retired: this.used.size, exhausted: this.exhausted,
              fetchMs: this.lastVoiceMs,
              saying: this.current ? { text: this.current.text, role: this.current.role,
-                                      spoken: this.current.spoken } : null };
+                                      spoken: this.current.spoken,
+                                      pending: !!this.current.pending,
+                                      failed: !!this.current.failed } : null };
   }
 }

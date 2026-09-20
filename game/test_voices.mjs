@@ -273,6 +273,51 @@ console.log('--- muting silences the speaker, not the dialogue ---');
   check('unmuting starts the voice again', fetches === 2 && v.status().muted === false);
 }
 
+console.log('--- audio on its way is not audio that failed ---');
+{
+  let t = 0;
+  let resolveIt;
+  const mic = new MicMeter(); mic._nowMs = () => t;
+  const v = new Voices({ now: () => t, mic,
+    fetchImpl: () => new Promise(r => { resolveIt = r; }),   // still in flight
+    audioFactory: () => fakeAudio(1) });
+  v.update(t, [mob('walker', 'hostile')], WORLD);
+  t = v.nextAt + 1;
+  const said = v.update(t, [mob('walker', 'hostile')], WORLD);
+  await settle();
+  check('while the fetch is in flight the line is pending, not failed',
+        said.pending === true && said.failed === false && said.spoken === false);
+  check('and the status says so, so the bubble can stay quiet about it',
+        v.status().saying.pending === true && v.status().saying.failed === false);
+  resolveIt({ ok: true, blob: async () => ({ size: 10 }) });
+  await settle(); await settle(); await settle();
+  check('once it arrives it is spoken and no longer pending',
+        said.spoken === true && said.pending === false && said.failed === false);
+
+  let t2 = 0;
+  const v2 = new Voices({ now: () => t2, mic,
+    fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ error: 'budget spent' }) }),
+    audioFactory: () => fakeAudio(1) });
+  v2.update(t2, [mob('walker', 'hostile')], WORLD);
+  t2 = v2.nextAt + 1;
+  const bad = v2.update(t2, [mob('walker', 'hostile')], WORLD);
+  await settle(); await settle(); await settle();
+  check('a real failure IS marked failed, so the bubble can say why',
+        bad.failed === true && bad.pending === false && bad.spoken === false);
+
+  let t3 = 0;
+  const v3 = new Voices({ now: () => t3, mic,
+    fetchImpl: async () => ({ ok: true, blob: async () => ({ size: 10 }) }),
+    audioFactory: () => fakeAudio(1) });
+  v3.setMuted(true);
+  v3.update(t3, [mob('walker', 'hostile')], WORLD);
+  t3 = v3.nextAt + 1;
+  const muted = v3.update(t3, [mob('walker', 'hostile')], WORLD);
+  await settle();
+  check('muting on purpose is never marked as a failure',
+        muted.failed === false && muted.pending === false && muted.muted === true);
+}
+
 console.log('--- the line goes to someone you can see ---');
 {
   const seen = mob('walker', 'hostile');
