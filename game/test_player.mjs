@@ -182,5 +182,50 @@ console.log('--- pinning the room ---');
   check('status says whether it is pinned', p.status().pinned === null && new Population().pin && true);
 }
 
+console.log('--- losing all three hearts costs 50, and the hearts come back ---');
+{
+  const p = new Player();
+  const sc = new Score();
+  p.reset(0, 0);
+  for (let i = 0; i < 6; i++) sc.kill('brute');       // 150 banked
+  check('a full run is banked first', sc.value === 150, String(sc.value));
+
+  let now = 0, overrunAt = null;
+  for (let h = 0; h < 3; h++) {
+    now += PLAYER.immunityMs + 10;
+    const r = p.damage(now);
+    if (r.overrun) { sc.overrun(); overrunAt = now; } else sc.hit();
+  }
+  check('three hits empties the hearts', p.hearts === 0 && !p.alive);
+  check('the first two hits cost 20 each and the death costs 50, not 70',
+        sc.value === 150 - 20 - 20 - 50, `${sc.value} (expected ${150 - 90})`);
+  check('the death is counted separately from ordinary hits',
+        sc.overruns === 1 && sc.hitsTaken === 3);
+
+  check('the hearts are NOT back immediately', !p.tick(overrunAt + 100) && !p.alive);
+  const revived = p.tick(overrunAt + PLAYER.reviveMs + 10);
+  check('after the revive delay all three hearts return',
+        revived && p.alive && p.hearts === p.maxHearts, `hearts=${p.hearts}`);
+  check('and the score survives the revive, minus the 50', sc.value === 60);
+
+  // A death can never drive the score negative -- the chain settlement mints
+  // from this number and must never be asked for a refund.
+  const poor = new Score();
+  poor.kill('walker');                                  // 10
+  poor.overrun();
+  check('a death with almost nothing banked floors at zero, never negative',
+        poor.value === 0, String(poor.value));
+  poor.overrun();
+  check('and dying again at zero stays at zero', poor.value === 0);
+  check('but the deaths are still counted', poor.overruns === 2);
+
+  const fresh = new Score();
+  fresh.overrun();
+  fresh.reset();
+  check('reset clears the death count too', fresh.overruns === 0 && fresh.value === 0);
+  check('status reports overruns for the dashboard', new Score().status().overruns === 0);
+  check('POINTS.overrun is the single source of the number', POINTS.overrun === -50);
+}
+
 console.log(failures ? `\n  ${failures} FAILURE(S)` : '\n  all player and room contracts hold');
 process.exit(failures ? 1 : 0);

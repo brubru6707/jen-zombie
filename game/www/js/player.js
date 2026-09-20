@@ -16,12 +16,17 @@ export const PLAYER = {
  * game is built on, and taking a hit costs -- but the score never goes
  * negative, because a number that only falls is not worth looking at.
  */
-export const POINTS = { walker: 10, runner: 15, brute: 25, snapshot: 50, hit: -20 };
+// Being overrun costs 50 and REPLACES that hit's own -20 rather than stacking
+// on top of it, so losing your hearts costs exactly the 50 the HUD announces.
+// Stacking would have made the death moment cost 70 and the number on screen
+// disagree with the message next to it.
+export const POINTS = { walker: 10, runner: 15, brute: 25, snapshot: 50, hit: -20, overrun: -50 };
 
 export class Score {
   constructor() { this.reset(); }
   reset() {
     this.value = 0; this.kills = 0; this.snapshots = 0; this.hitsTaken = 0;
+    this.overruns = 0;
     this.best = 0;
   }
   _add(n) {
@@ -32,11 +37,19 @@ export class Score {
   kill(kind = 'walker') { this.kills++; return this._add(POINTS[kind] ?? POINTS.walker); }
   snapshot() { this.snapshots++; return this._add(POINTS.snapshot); }
   hit() { this.hitsTaken++; return this._add(POINTS.hit); }
+  /**
+   * All three hearts gone. Costs POINTS.overrun INSTEAD of the hit penalty --
+   * the caller uses this in place of hit(), not as well as it. Floored at zero
+   * by _add, so a death can never put the score negative and can never make
+   * the chain settlement owe anything.
+   */
+  overrun() { this.hitsTaken++; this.overruns++; return this._add(POINTS.overrun); }
   /** Padded so the HUD does not jiggle as it grows. */
   get text() { return String(this.value).padStart(4, '0'); }
   status() {
     return { value: this.value, best: this.best, kills: this.kills,
-             snapshots: this.snapshots, hitsTaken: this.hitsTaken };
+             snapshots: this.snapshots, hitsTaken: this.hitsTaken,
+             overruns: this.overruns };
   }
 }
 

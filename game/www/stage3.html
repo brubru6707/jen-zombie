@@ -204,7 +204,7 @@ import { WorldSource } from './js/worldsource.js';
 import { SlashSwarm } from './js/slash.js';
 import { Aura } from './js/aura.js';
 import { Voices } from './js/voices.js';
-import { Player, PLAYER, Score } from './js/player.js';
+import { Player, PLAYER, Score, POINTS } from './js/player.js';
 import { Population, MOOD } from './js/population.js';
 import { FlatRig, FLAT, makeFlatRenderer, makeBackdrop } from './js/flatmode.js';
 
@@ -1180,10 +1180,12 @@ async function run(flat = false) {
         if (m.attack(nowMs)) {
           const r = player.damage(nowMs);
           if (r.hit) {
-            score.hit();
+            // Overrun instead of, not as well as: the death costs 50, full stop.
+            if (r.overrun) score.overrun(); else score.hit();
             renderHearts();
             renderScore(false);
-            flash(r.overrun ? 'OVERRUN' : 'HIT', r.overrun ? 2600 : 900);
+            flash(r.overrun ? 'OVERRUN  \u2212' + Math.abs(POINTS.overrun) + '  HEARTS BACK SHORTLY'
+                            : 'HIT  \u2212' + Math.abs(POINTS.hit), r.overrun ? 2600 : 900);
             log(r.overrun ? 'OVERRUN' : 'hit', '| hearts', r.hearts);
             if (r.overrun) for (const other of mobs) other.leave();   // the field clears
           }
