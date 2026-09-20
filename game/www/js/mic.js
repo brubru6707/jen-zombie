@@ -38,12 +38,21 @@ export const PRESETS = {
 /** Least to most sensitive. The cycle order for the handheld and the chip. */
 export const PRESET_ORDER = ['off', 'min', 'low', 'normal', 'high', 'max'];
 
-// What the room settles at when nobody is listening. Deliberately BETWEEN the
-// population's calm and hostile thresholds, so OFF does not hand the player a
-// field of peaceful locals or a field of zombies -- it freezes the mix where
-// it is and stops sound moving it. The game still plays; the room stops
-// reacting.
-export const OFF_HOSTILITY = 0.30;
+// What the room reads when nobody is listening: NOTHING, because that is what
+// a microphone that is off hears.
+//
+// This was 0.30 -- deliberately between the population's calm and hostile
+// thresholds, the idea being that OFF should freeze the mix rather than hand
+// the player a field of all-peaceful or all-hostile mobs. It was wrong. In a
+// real session someone switched the mic off while the room was hostile, and
+// the room stayed hostile indefinitely, because a value between the two
+// thresholds argues for neither and the mood never moves again. "I turned the
+// mic off and it is still hostile" is the only way that can read.
+//
+// Silence is the honest answer and the predictable one: off means quiet, quiet
+// means the room calms down, and turning it back on hands control straight
+// back to the room.
+export const OFF_HOSTILITY = 0;
 export const ESP32_TOGGLE = { 2048: 'normal', 4095: 'high' };
 export function presetFromToggle(raw) {
   return ESP32_TOGGLE[raw] || (Number(raw) > 3000 ? 'high' : 'normal');
@@ -150,6 +159,26 @@ export class MicMeter {
     if (this.suppressed) return 0;
     if (!this.listening) return OFF_HOSTILITY;
     return hostilityFrom(this.db, this.floor, this.ceiling);
+  }
+
+  /**
+   * Hostility from the ROLLING PEAK rather than this instant.
+   *
+   * Shouting and blowing are bursty: between breaths the level falls back to
+   * room tone, which is below the floor, so the instantaneous value collapses
+   * to zero. Measured on the phone, ten seconds of someone blowing straight at
+   * the microphone gave 29 zeroes and a single 0.77 -- the lamps flickered red
+   * on each burst while the room's two-second dwell restarted every time and
+   * the mood could never turn over.
+   *
+   * The peak window is the same length as that dwell, so this answers "has it
+   * been loud in here recently", which is the question the room is actually
+   * asking. The lamps keep using the instantaneous value: they should twitch.
+   */
+  get hostilityPeak() {
+    if (this.suppressed) return 0;
+    if (!this.listening) return OFF_HOSTILITY;
+    return hostilityFrom(Math.max(this.db, this.peak), this.floor, this.ceiling);
   }
   /** True while the game's own audio is playing (plus a short tail). */
   get suppressed() { return this._nowMs() < this.suppressedUntil; }

@@ -227,5 +227,34 @@ console.log('--- losing all three hearts costs 50, and the hearts come back ---'
   check('POINTS.overrun is the single source of the number', POINTS.overrun === -50);
 }
 
+console.log('--- the room cannot deadlock between mood and crowd ---');
+{
+  const pop = new Population({ mood: MOOD.CALM });
+  // pin() RETURNS the new mood, and the caller must act on it. A caller that
+  // ignores the return -- the debug console, a ?mood= URL -- leaves the mood
+  // saying one thing while the crowd on screen is the other, and from then on
+  // update() has nothing to report. This is the deadlock the page's
+  // reconciler exists to break; these assertions pin the contract down.
+  const returned = pop.pin(MOOD.HOSTILE);
+  check('pinning returns the new mood, so it cannot be changed silently',
+        returned === MOOD.HOSTILE);
+  check('and the mood really did change', pop.mood === MOOD.HOSTILE);
+  pop.pin(null);
+  check('unpinning leaves the mood where the pin put it', pop.mood === MOOD.HOSTILE);
+  check('and stops ignoring the microphone', pop.status().pinned === null);
+
+  // Now the trap: maximum hostility reports NOTHING, because it already agrees.
+  let out = null;
+  for (let i = 0; i < 10; i++) out = out || pop.update(1000, 1.0);
+  check('shouting at a room that already thinks it is hostile reports no change',
+        out === null, String(out));
+
+  // The other direction still works, so the reconciler is a safety net and not
+  // a replacement for the rule.
+  let calm = null;
+  for (let i = 0; i < 10; i++) calm = calm || pop.update(1000, 0.0);
+  check('going quiet still turns the room over normally', calm === MOOD.CALM);
+}
+
 console.log(failures ? `\n  ${failures} FAILURE(S)` : '\n  all player and room contracts hold');
 process.exit(failures ? 1 : 0);

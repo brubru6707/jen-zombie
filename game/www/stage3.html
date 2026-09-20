@@ -743,6 +743,7 @@ async function run(flat = false) {
   let seq = 0, lastFetchMs = 0, maxFrameMs = 0, lastT = 0, lastPost = 0, started = false;
   let trackingOk = false, nearest = 99, arrived = 0;
   let target = -1, padSwings = 0, kills = 0, throws = 0, moodChanges = 0;
+  let moodDriftMs = 0, moodForced = 0;
   // Stalls are the headline complaint, so they are measured rather than
   // guessed at: any frame over this long is recorded WITH what was happening,
   // and the worst few survive to the dashboard. That is the difference
@@ -1052,7 +1053,7 @@ async function run(flat = false) {
           voices: voices.status(),
           bubble: { shown: bubbleShown, atEdge: bubbleEdge, hidden: bubbleHidden, errors: bubbleFail },
           player: Object.assign(player.status(performance.now()), { score: score.status() }),
-          room: Object.assign(pop.status(), { changes: moodChanges,
+          room: Object.assign(pop.status(), { changes: moodChanges, forced: moodForced,
                  calm: mobs.filter(m => m.mood === 'calm' && !m.leaving).length,
                  hostile: mobs.filter(m => m.mood !== 'calm' && !m.leaving).length,
                  leaving: mobs.filter(m => m.leaving).length }),
@@ -1139,8 +1140,31 @@ async function run(flat = false) {
       // Quiet empties the room of anything hostile and fills it with company;
       // noise sends the company away again. Both happen by WALKING, not by
       // popping, so you can see it happen.
-      const moodNow = pop.update(dt * 1000, micLive ? mic.hostility : 0);
-      if (moodNow) {
+      // The ROOM follows the recent peak -- bursty noise must still be able to
+      // turn it over. The LAMPS keep the instantaneous value a few lines up,
+      // because a meter that does not twitch looks broken.
+      const moodNow = pop.update(dt * 1000, micLive ? mic.hostilityPeak : 0);
+      if (moodNow) swapCrowd(moodNow);
+      // The room's mood and the crowd on screen can drift apart: anything that
+      // sets the mood WITHOUT the render loop seeing the return value -- pin()
+      // from the console, a ?mood= URL, a future caller -- leaves the mood
+      // saying one thing and the mobs being another. From then on update()
+      // sees `wants === this.mood`, returns null, and the room is deadlocked:
+      // shouting changes nothing because it thinks it already turned over.
+      // Reconcile instead of trusting the return value alone.
+      {
+        const live = mobs.filter(m => !m.leaving && !m.dying && !m.dead);
+        const wrong = live.length > 0 && live.every(m => m.mood !== pop.mood);
+        moodDriftMs = wrong ? moodDriftMs + dt * 1000 : 0;
+        if (moodDriftMs > 2000) {
+          moodDriftMs = 0;
+          warn('crowd did not match the room mood; forcing the changeover to', pop.mood);
+          moodForced++;
+          swapCrowd(pop.mood);
+        }
+      }
+
+      function swapCrowd(moodNow) {
         const w0 = cycle.current || {};
         // The changeover has to OVERLAP, or the room empties for ten seconds
         // and looks broken. The departing crowd is staggered rather than all

@@ -1,5 +1,8 @@
 // Exercises the mic module's maths and calibration without a microphone.
 import { OFF_HOSTILITY } from './www/js/mic.js';
+import { MOOD_RULE as _MR } from './www/js/population.js';
+const MOOD_RULE_DWELL = _MR.dwellMs;
+const MOOD_RULE_CALM_BELOW = _MR.calmBelow;
 import { MicMeter, MIC, PRESETS, PRESET_ORDER, ESP32_TOGGLE, presetFromToggle,
          rmsToDb, hostilityFrom, percentile, DEFAULT_CAL, CAL_SPAN_DB,
          CEILING_MAX_DB, MIN_SPAN_DB, DB_MIN } from './www/js/mic.js';
@@ -218,6 +221,49 @@ console.log('--- rolling peak ---');
         `peak=${m.peak.toFixed(1)}`);
 }
 
+console.log('--- bursty noise must still be able to turn the room over ---');
+store = {};
+{
+  // Driven through sample() with a fake analyser, exactly like the rolling
+  // peak test above: setting .db by hand would not fill the peak buffer.
+  const m = new MicMeter({ peakWindowMs: 2000 });
+  m.state = MIC.LIVE;
+  m._buf = new Float32Array(4);
+  let level = 0.0002;                                   // room tone, under the floor
+  m.analyser = { getFloatTimeDomainData: b => b.fill(level) };
+  m.setPreset('normal');
+  m.sample(0);
+  check('quiet room is not hostile on either measure',
+        m.hostility === 0 && m.hostilityPeak === 0);
+
+  level = 0.35; m.sample(100);                          // one burst of blowing
+  check('the burst is hostile', m.hostility > 0.9, m.hostility.toFixed(2));
+
+  level = 0.0002;                                       // the gap between breaths
+  for (let t = 200; t <= 1600; t += 100) m.sample(t);
+  check('the instantaneous value collapses to zero between bursts',
+        m.hostility === 0, String(m.hostility));
+  check('but the PEAK still remembers it, so a 2 s dwell can accumulate',
+        m.hostilityPeak > 0.9, m.hostilityPeak.toFixed(2));
+
+  // ...and it does not remember forever, or the room could never calm down.
+  m.sample(2700);
+  check('once the window passes, the peak forgets and the room can go calm',
+        m.hostilityPeak === 0, String(m.hostilityPeak));
+  check('the peak window is at least as long as the room dwell, or bursts never add up',
+        m.peakWindowMs >= MOOD_RULE_DWELL, `${m.peakWindowMs}ms vs ${MOOD_RULE_DWELL}ms`);
+
+  level = 0.35; m.sample(2800);
+  m.setPreset('off');
+  check('switched off, the peak measure reads silence too -- a remembered shout '
+      + 'must not keep the room hostile after the mic is off',
+        m.hostilityPeak === OFF_HOSTILITY && m.hostilityPeak === 0);
+  m.setPreset('normal');
+  m.suppress(1000);
+  check('and while the game is talking it reads zero, not the remembered peak',
+        m.hostilityPeak === 0);
+}
+
 console.log('--- OFF is a stop, not just the quietest setting ---');
 store = {};
 {
@@ -230,9 +276,15 @@ store = {};
   m.db = -100;
   const quiet = m.hostility;
   m.db = 0;
-  check('and nothing the room does moves it', m.hostility === quiet && quiet === OFF_HOSTILITY);
-  check('OFF sits between the calm and hostile thresholds, so the mix freezes rather than flipping',
-        OFF_HOSTILITY > 0.18 && OFF_HOSTILITY < 0.45, String(OFF_HOSTILITY));
+  check('and nothing the room does moves it, however loud', m.hostility === quiet);
+  // A value BETWEEN the thresholds argues for neither mood, so the room would
+  // keep whatever it had when OFF was pressed -- including hostile, forever.
+  // Off has to mean silence or the switch does nothing you can predict.
+  check('OFF reads as silence, not as a frozen middle value',
+        OFF_HOSTILITY === 0, String(OFF_HOSTILITY));
+  check('so it is below the calm threshold and the room WILL settle down',
+        OFF_HOSTILITY <= MOOD_RULE_CALM_BELOW,
+        `${OFF_HOSTILITY} vs calmBelow ${MOOD_RULE_CALM_BELOW}`);
   m.setPreset('normal');
   check('turning it back on resumes metering the room', m.listening && m.hostility === 1);
   m.setPreset('off');
