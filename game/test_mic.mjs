@@ -1,4 +1,5 @@
 // Exercises the mic module's maths and calibration without a microphone.
+import { OFF_HOSTILITY } from './www/js/mic.js';
 import { MicMeter, MIC, PRESETS, PRESET_ORDER, ESP32_TOGGLE, presetFromToggle,
          rmsToDb, hostilityFrom, percentile, DEFAULT_CAL, CAL_SPAN_DB,
          CEILING_MAX_DB, MIN_SPAN_DB, DB_MIN } from './www/js/mic.js';
@@ -37,7 +38,7 @@ check('degenerate window: below -> 0, at/above -> 1, never NaN',
 check('inverted window (ceiling below floor) cannot produce NaN',
       !Number.isNaN(hostilityFrom(-30, -20, -40)));
 
-console.log('--- sensitivity presets (five steps, cycled by one button) ---');
+console.log('--- sensitivity presets (six steps, cycled by one button) ---');
 store = {};
 {
   const m = new MicMeter();
@@ -53,14 +54,18 @@ store = {};
   const hNorm = m.hostility;
   check('same input is hotter on high than normal', hHigh > hNorm,
         `high=${hHigh.toFixed(2)} normal=${hNorm.toFixed(2)}`);
-  check('five presets exist, normal in the middle', Object.keys(PRESETS).length === 5 &&
-        PRESET_ORDER.length === 5 && PRESET_ORDER[2] === 'normal', PRESET_ORDER.join('/'));
-  check('the list runs least to most sensitive (ceiling falls monotonically)',
-        PRESET_ORDER.every((n, i) => i === 0 || PRESETS[n].ceilingShift < PRESETS[PRESET_ORDER[i-1]].ceilingShift),
+  check('six settings exist and OFF is the first of them', Object.keys(PRESETS).length === 6 &&
+        PRESET_ORDER.length === 6 && PRESET_ORDER[0] === 'off' && PRESET_ORDER[3] === 'normal',
+        PRESET_ORDER.join('/'));
+  check('the listening steps run least to most sensitive (ceiling falls monotonically)',
+        PRESET_ORDER.slice(1).every((n, i) => i === 0 ||
+          PRESETS[n].ceilingShift < PRESETS[PRESET_ORDER.slice(1)[i-1]].ceilingShift),
         PRESET_ORDER.map(n => PRESETS[n].ceilingShift).join(','));
-  check('two presets sit below normal and two above',
-        PRESET_ORDER.slice(0,2).every(n => PRESETS[n].ceilingShift > 0) &&
-        PRESET_ORDER.slice(3).every(n => PRESETS[n].ceilingShift < 0));
+  check('two settings sit below normal and two above',
+        PRESET_ORDER.slice(1, 3).every(n => PRESETS[n].ceilingShift > 0) &&
+        PRESET_ORDER.slice(4).every(n => PRESETS[n].ceilingShift < 0));
+  check('min is now far harder to trigger than it was (a loud room was pinning it)',
+        PRESETS.min.ceilingShift >= 24, `+${PRESETS.min.ceilingShift} dB`);
   check('ESP32 2048 -> normal', presetFromToggle(2048) === 'normal');
   check('ESP32 4095 -> high', presetFromToggle(4095) === 'high');
   check('unknown toggle values still resolve', presetFromToggle(9) === 'normal' && presetFromToggle(3500) === 'high');
@@ -73,11 +78,11 @@ store = {};
   m.setFineDb(0); m.setPreset('normal');
   check('one press steps one preset and STAYS there', m.cyclePreset(1) === 'high' && m.preset === 'high');
   check('the next press steps again, it does not toggle back', m.cyclePreset(1) === 'max' && m.preset === 'max');
-  check('the top wraps round to the bottom', m.cyclePreset(1) === 'min');
+  check('the top wraps round to OFF', m.cyclePreset(1) === 'off');
   check('stepping down works too', m.cyclePreset(-1) === 'max' && m.cyclePreset(-1) === 'high');
-  check('five presses return to where they started',
-        (() => { const start = m.preset; for (let i = 0; i < 5; i++) m.cyclePreset(1); return m.preset === start; })());
-  check('presetIndex tracks the position', (m.setPreset('min'), m.presetIndex === 0) && (m.setPreset('max'), m.presetIndex === 4));
+  check('six presses return to where they started',
+        (() => { const start = m.preset; for (let i = 0; i < 6; i++) m.cyclePreset(1); return m.preset === start; })());
+  check('presetIndex tracks the position', (m.setPreset('off'), m.presetIndex === 0) && (m.setPreset('max'), m.presetIndex === 5));
   m.setPreset('normal');
   check('a cycled preset persists', (() => { m.cyclePreset(1); const m2 = new MicMeter(); return m2.preset === 'high'; })());
   check('ceiling can never cross the floor',
@@ -211,6 +216,29 @@ console.log('--- rolling peak ---');
   m.sample(2600);
   check('peak expires after the window', m.peak < peakAfterShout - 10,
         `peak=${m.peak.toFixed(1)}`);
+}
+
+console.log('--- OFF is a stop, not just the quietest setting ---');
+store = {};
+{
+  const m = new MicMeter();
+  m.setPreset('max'); m.db = -10;
+  check('listening, a loud room is hostile', m.listening && m.hostility > 0.9);
+  m.setPreset('off');
+  check('switched off, the meter stops reporting the room',
+        !m.listening && m.hostility === OFF_HOSTILITY, String(m.hostility));
+  m.db = -100;
+  const quiet = m.hostility;
+  m.db = 0;
+  check('and nothing the room does moves it', m.hostility === quiet && quiet === OFF_HOSTILITY);
+  check('OFF sits between the calm and hostile thresholds, so the mix freezes rather than flipping',
+        OFF_HOSTILITY > 0.18 && OFF_HOSTILITY < 0.45, String(OFF_HOSTILITY));
+  m.setPreset('normal');
+  check('turning it back on resumes metering the room', m.listening && m.hostility === 1);
+  m.setPreset('off');
+  m.suppress(1000);
+  check('a muted-for-dialogue window still reads zero, not the off value',
+        m.suppressed && m.hostility === 0);
 }
 
 console.log(failures ? `\n  ${failures} FAILURE(S)` : '\n  all mic metering contracts hold');

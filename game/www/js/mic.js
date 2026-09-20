@@ -12,9 +12,15 @@ export const MIC = {
   DENIED: 'denied', LOST: 'lost', UNSUPPORTED: 'unsupported',
 };
 
-// FIVE discrete sensitivity presets, two either side of normal, 6 dB apart.
+// SIX discrete sensitivity settings, from a full stop to a hair trigger.
 // A lower ceiling means a quieter room reaches full hostility, so the shift is
 // NEGATIVE as sensitivity rises.
+//
+// The spacing is deliberately uneven. From normal upwards it is 6 dB a step,
+// which is all the headroom a quiet room needs. Downwards it is 12, because
+// the failure that actually happens is a loud room pinning hostility at 1.0
+// and burying the peaceful half of the game -- min at +12 was still reaching
+// 0.99 on a -10 dBFS shout, and a demo floor is louder than that.
 //
 // The ESP32's input is a two-position momentary button, not a knob (no usable
 // ADC on that pin while the radio is on), so the hardware cannot address a
@@ -22,14 +28,22 @@ export const MIC = {
 // same step is what the on-screen SENS chip does, and the dashboard can jump
 // straight to any of them.
 export const PRESETS = {
-  min:    { label: 'min',    ceilingShift: +12 },   // shouting room; hardest to trigger
-  low:    { label: 'low',    ceilingShift: +6 },
+  off:    { label: 'off',    ceilingShift: +24, off: true },  // not listening at all
+  min:    { label: 'min',    ceilingShift: +24 },   // roaring room; hardest to trigger
+  low:    { label: 'low',    ceilingShift: +12 },
   normal: { label: 'normal', ceilingShift: 0 },
   high:   { label: 'high',   ceilingShift: -6 },
   max:    { label: 'max',    ceilingShift: -12 },   // quiet room; hair trigger
 };
 /** Least to most sensitive. The cycle order for the handheld and the chip. */
-export const PRESET_ORDER = ['min', 'low', 'normal', 'high', 'max'];
+export const PRESET_ORDER = ['off', 'min', 'low', 'normal', 'high', 'max'];
+
+// What the room settles at when nobody is listening. Deliberately BETWEEN the
+// population's calm and hostile thresholds, so OFF does not hand the player a
+// field of peaceful locals or a field of zombies -- it freezes the mix where
+// it is and stops sound moving it. The game still plays; the room stops
+// reacting.
+export const OFF_HOSTILITY = 0.30;
 export const ESP32_TOGGLE = { 2048: 'normal', 4095: 'high' };
 export function presetFromToggle(raw) {
   return ESP32_TOGGLE[raw] || (Number(raw) > 3000 ? 'high' : 'normal');
@@ -130,7 +144,13 @@ export class MicMeter {
     const shift = (PRESETS[this.preset] || PRESETS.normal).ceilingShift + this.fineDb;
     return Math.max(this.cal.floor + 3, this.cal.ceiling + shift);
   }
-  get hostility() { return this.suppressed ? 0 : hostilityFrom(this.db, this.floor, this.ceiling); }
+  /** True while the meter is switched off rather than merely insensitive. */
+  get listening() { return !(PRESETS[this.preset] || {}).off; }
+  get hostility() {
+    if (this.suppressed) return 0;
+    if (!this.listening) return OFF_HOSTILITY;
+    return hostilityFrom(this.db, this.floor, this.ceiling);
+  }
   /** True while the game's own audio is playing (plus a short tail). */
   get suppressed() { return this._nowMs() < this.suppressedUntil; }
   _nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }

@@ -19,6 +19,12 @@
 //    recorded and shown on the dashboard rather than swallowed.
 //  * ONE VOICE AT A TIME. Overlapping lines are noise, and they multiply the
 //    bill.
+//  * NOTHING IS EVER SAID TWICE. A line, once spoken, is retired for the rest
+//    of the session -- across mobs, across roles and across worlds. Hearing
+//    the same six words for the third time is what makes a crowd read as a
+//    loop instead of a place. When every mob on screen has run out of fresh
+//    lines they simply go quiet until the next world brings more, which is
+//    the honest failure: silence, not repetition.
 //
 // Free of the DOM and of three: the page owns the bubble, this owns the
 // choosing, the timing and the audio.
@@ -33,6 +39,21 @@ export const VOICE = {
 };
 
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+// Case and spacing are not meaningful differences between two lines, so the
+// retirement set is keyed on the flattened text. Two worlds that both produce
+// "Stay on the path." therefore only ever spend it once.
+const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** A copy in random order. Fisher-Yates; the caller may keep it. */
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
 
 /** The dialogue list for a mob, out of a world's barks. Never throws. */
 export function linesFor(world, mob) {
@@ -50,7 +71,9 @@ export function linesFor(world, mob) {
     }
   }
   if (!Array.isArray(list) || !list.length) return null;
-  return list.filter(l => typeof l === 'string' && l.trim()).slice(0, 8);
+  // Twelve: the model is asked for six per role and a canned world carries
+  // six, and nothing is ever repeated, so a bigger ceiling is free headroom.
+  return list.filter(l => typeof l === 'string' && l.trim()).slice(0, 12);
 }
 
 /** Can this mob talk right now? */
@@ -71,7 +94,14 @@ export class Voices {
     this.current = null;        // { mob, text, role, until, spoken }
     this.nextAt = 0;
     this.enabled = true;
+    // Muting silences the SPEAKER, not the dialogue: the bubble still appears
+    // over the mob's head and lines are still retired. Anything else would
+    // mean muting quietly changed what the game was doing.
+    this.muted = false;
     this.lines = 0; this.spoken = 0; this.silent = 0; this.failures = 0;
+    // Every line said so far, flattened. Nothing in here is ever said again.
+    this.used = new Set();
+    this.exhausted = 0;         // times every speaker on screen was out of lines
     this.lastError = null; this.lastLine = null; this.lastVoiceMs = 0;
     this._audio = null; this._url = null; this._busy = false;
   }
@@ -85,6 +115,36 @@ export class Voices {
     if (this.mic && this.mic.releaseSuppression) this.mic.releaseSuppression();
   }
 
+  /**
+   * The lines this mob has left -- its role's dialogue minus everything
+   * already spoken. null when it has nothing new to say.
+   */
+  unusedFor(world, mob) {
+    const lines = linesFor(world, mob);
+    if (!lines || !lines.length) return null;
+    const left = lines.filter(l => !this.used.has(norm(l)));
+    return left.length ? left : null;
+  }
+
+  /** Let every line be said again. Only for tests and a deliberate restart. */
+  forget() { this.used.clear(); this.exhausted = 0; }
+
+  /**
+   * Silence the speaker. Any line already playing stops at once and the
+   * microphone is handed back, because a suppression that outlives its audio
+   * would leave the game deaf.
+   */
+  setMuted(m) {
+    this.muted = !!m;
+    if (!this.muted) return this.muted;
+    try { if (this._audio) { this._audio.pause(); this._audio.src = ''; } } catch (e) {}
+    if (this._url) { try { URL.revokeObjectURL(this._url); } catch (e) {} this._url = null; }
+    this._audio = null;
+    if (this.mic && this.mic.suppressFor) { try { this.mic.suppressFor(0); } catch (e) {} }
+    else if (this.mic && this.mic.releaseSuppression) { try { this.mic.releaseSuppression(); } catch (e) {} }
+    return this.muted;
+  }
+
   _schedule(now) {
     const [lo, hi] = VOICE.gapMs;
     this.nextAt = now + lo + Math.random() * (hi - lo);
@@ -94,7 +154,7 @@ export class Voices {
    * Once a frame. Picks a speaker when it is time, retires the bubble when it
    * expires. Returns the line being said now, or null.
    */
-  update(now, mobs, world) {
+  update(now, mobs, world, prefer) {
     try {
       if (this.current && now >= this.current.until) {
         this.current = null;
@@ -106,10 +166,35 @@ export class Voices {
       const able = [];
       for (const m of mobs || []) if (canSpeak(m)) able.push(m);
       if (!able.length) { this.nextAt = now + 1000; return null; }
-      const mob = pick(able);
-      const lines = linesFor(world, mob);
-      if (!lines || !lines.length) { this.nextAt = now + 2000; return null; }
-      const text = String(pick(lines)).slice(0, VOICE.maxChars);
+      // Walk the possible speakers in random order and take the first one
+      // holding a line nobody has used. Picking the mob first and then
+      // discovering it is out would silence the whole frame for no reason.
+      //
+      // `prefer` is the page asking for a speaker the player can actually
+      // SEE. A line over the head of something behind you is a line nobody
+      // reads, so on-screen mobs get first refusal and the rest are the
+      // fallback -- never a reason to stay silent.
+      let mob = null, lines = null;
+      const order = shuffled(able);
+      const passes = (typeof prefer === 'function')
+        ? [order.filter(m => { try { return prefer(m); } catch (e) { return false; } }), order]
+        : [order];
+      for (const pass of passes) {
+        for (const m of pass) {
+          const left = this.unusedFor(world, m);
+          if (left) { mob = m; lines = left; break; }
+        }
+        if (mob) break;
+      }
+      if (!mob) {
+        // Everyone here has said everything they have. Wait for a new world.
+        this.exhausted++;
+        this.nextAt = now + 3000;
+        return null;
+      }
+      const raw = pick(lines);
+      this.used.add(norm(raw));       // retired BEFORE any truncation, so the
+      const text = String(raw).slice(0, VOICE.maxChars);   // key matches next time
       const role = mob.mood === 'calm' ? 'calm' : (mob.kind || 'walker');
       this.current = { mob, text, role, until: now + VOICE.showMs, spoken: false };
       this.lines++;
@@ -124,6 +209,7 @@ export class Voices {
 
   /** Fetch and play one line. Never throws, never blocks the frame. */
   _say(text, role) {
+    if (this.muted) { this.silent++; return; }   // shown, never sounded
     if (!this.fetch || !this.audioFactory) { this.silent++; return; }
     this._busy = true;
     const t0 = this.now();
@@ -208,7 +294,8 @@ export class Voices {
 
   status() {
     return { lines: this.lines, spoken: this.spoken, silent: this.silent,
-             failures: this.failures, lastError: this.lastError,
+             failures: this.failures, lastError: this.lastError, muted: this.muted,
+             retired: this.used.size, exhausted: this.exhausted,
              fetchMs: this.lastVoiceMs,
              saying: this.current ? { text: this.current.text, role: this.current.role,
                                       spoken: this.current.spoken } : null };

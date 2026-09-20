@@ -4,3 +4,20 @@ __pycache__/
 *.pyc
 controller-bridge/certs/
 certs/
+
+# Solana keypairs. solana-keygen writes a RAW PRIVATE KEY as a plain JSON array
+# of bytes, with no extension or name that the rules above would catch. These
+# are devnet-only keys so the blast radius is nil, but a committed key is a
+# habit, not an accident -- so the whole key directory goes, plus every shape
+# the CLI and the SDK produce by default, anywhere in the tree.
+chain/keys/
+chain/*.json
+/*.json
+*keypair*.json
+*-key.json
+*.keypair
+id.json
+wallet.json
+mint.json
+.venv/
+venv/

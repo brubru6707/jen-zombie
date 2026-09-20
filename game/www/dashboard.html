@@ -133,6 +133,17 @@
       <button class="cal" id="do-cal">CALIBRATE (3 s quiet)</button>
       <button class="warn" id="do-reset">reset calibration</button>
     </div>
+    <div class="ctl">
+      <span class="lbl">MODE</span>
+      <button id="mode-ar">AR</button>
+      <button id="mode-2d">2D ON SCREEN</button>
+      <span class="v" id="mode-state" style="font-size:12px">—</span>
+    </div>
+    <div class="ctl">
+      <span class="lbl">DIALOGUE</span>
+      <button id="do-mute">MUTE</button>
+      <span class="v" id="mute-state" style="font-size:12px">—</span>
+    </div>
     <div id="cmdmsg"></div>
   </div>
 
@@ -163,6 +174,8 @@
     <div class="r"><span class="k">tracking lost</span><span class="v" id="s-lost">—</span></div>
     <div class="r"><span class="k">green auras</span><span class="v" id="s-aura">—</span></div>
     <div class="r"><span class="k">dialogue said / spoken</span><span class="v" id="s-voice">—</span></div>
+    <div class="r"><span class="k">lines retired</span><span class="v" id="s-retired">—</span></div>
+    <div class="r"><span class="k">bubble on screen</span><span class="v" id="s-bubble">—</span></div>
     <div class="r"><span class="k">last line</span><span class="v" id="s-line">—</span></div>
     <div class="r"><span class="k">voice error</span><span class="v" id="s-voiceerr">—</span></div>
     <div id="s-worst" style="font-size:12px;color:var(--dim);line-height:1.6;margin-top:6px"></div>
@@ -340,9 +353,34 @@ async function poll() {
       : '—', se.lostNow ? 'bad' : se.trackLosses ? 'warn' : 'ok');
   const au = d.aura || {};
   set('s-aura', au.calm != null ? `${au.calm} mobs · ${au.motes} motes` : '—', 'dim');
+  // Mode comes from the headset, so the highlighted button is what is really
+  // running -- not what was last clicked.
+  const mode = d.mode || null;
+  $('mode-ar').classList.toggle('on', mode === 'ar');
+  $('mode-2d').classList.toggle('on', mode === '2d');
+  const rg = d.rig;
+  set('mode-state', !mode ? 'no session'
+      : (mode === '2d'
+         ? (rg ? `2D · ${rg.walked} m walked · facing ${rg.yawDeg}°` : '2D on screen')
+         : 'AR (headset)'), 'dim');
   const vo = d.voices || {};
   set('s-voice', vo.lines != null ? `${vo.lines} / ${vo.spoken} (${vo.silent || 0} silent)` : '—',
       vo.silent ? 'warn' : 'dim');
+  set('s-retired', vo.retired != null
+      ? `${vo.retired} retired${vo.exhausted ? `, ${vo.exhausted}x out of lines` : ''}` : '—',
+      vo.exhausted ? 'warn' : 'dim');
+  // The button reflects the headset, not what was last clicked, so a command
+  // that never arrived cannot leave it lying.
+  muted = !!vo.muted;
+  const mb = $('do-mute');
+  mb.textContent = muted ? 'UNMUTE' : 'MUTE';
+  mb.classList.toggle('warn', muted);
+  set('mute-state', vo.muted == null ? 'no session' : (muted ? 'muted — lines still shown' : 'audible'),
+      muted ? 'warn' : 'dim');
+  const bu = d.bubble || {};
+  set('s-bubble', bu.shown != null
+      ? `${bu.shown} frames shown (${bu.atEdge || 0} clamped to an edge)` : '—',
+      bu.errors ? 'bad' : 'dim');
   set('s-line', vo.saying ? `“${vo.saying.text}” (${vo.saying.role}${vo.saying.spoken ? ', voiced' : ', text only'})` : '—',
       vo.saying ? (vo.saying.spoken ? 'ok' : 'warn') : 'dim');
   set('s-voiceerr', vo.lastError ? String(vo.lastError).slice(0, 52) : 'none', vo.lastError ? 'bad' : 'dim');
@@ -473,6 +511,13 @@ function currentTrim() {
   const m = /([-+]?[0-9.]+) dB/.exec($('mic-sens').textContent || '');
   return m ? parseFloat(m[1]) : 0;
 }
+let muted = false;
+$('do-mute').addEventListener('click', () => {
+  const want = !muted;
+  send({ cmd: 'voices', mute: want }, want ? 'mute dialogue' : 'unmute dialogue');
+});
+$('mode-2d').addEventListener('click', () => send({ cmd: 'mode', mode: '2d' }, 'switch to 2D'));
+$('mode-ar').addEventListener('click', () => send({ cmd: 'mode', mode: 'ar' }, 'switch to AR'));
 $('do-cal').addEventListener('click', () => send({ cmd: 'calibrate' }, 'calibrate'));
 $('do-reset').addEventListener('click', () => send({ cmd: 'resetcal' }, 'reset calibration'));
 buildSensButtons(null, null);

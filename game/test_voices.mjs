@@ -165,5 +165,135 @@ console.log('--- clearing up ---');
         v.current === null && !mic.suppressed);
 }
 
+
+console.log('--- nothing is ever said twice ---');
+{
+  // Drives the scheduler forward and collects every line it chooses.
+  const drain = (v, mobs, world, rounds) => {
+    const out = [];
+    let t = 0;
+    for (let i = 0; i < rounds; i++) {
+      t = Math.max(t + 1, (v.current ? v.current.until : 0) + 1, v.nextAt + 1);
+      const said = v.update(t, mobs, world);
+      if (said && said.text && !out.includes(said.text)) out.push(said.text);
+      else if (said && said.text) out.push(said.text);   // a repeat WOULD land here
+    }
+    return out;
+  };
+  const silent = () => new Voices({ fetchImpl: null, audioFactory: null });
+
+  const v = silent();
+  const crowd = [mob('walker', 'hostile'), mob('runner', 'hostile'),
+                 mob('brute', 'hostile'), mob('walker', 'calm')];
+  const said = drain(v, crowd, WORLD, 40);
+  check('every line chosen is different', said.length === new Set(said).size,
+        `${said.length} lines, ${new Set(said).size} distinct`);
+  check('it says everything the world has before it stops',
+        said.length === 5, `${said.length} of 5`);
+  check('and then goes quiet rather than repeating itself',
+        v.status().exhausted > 0 && v.status().retired === 5);
+
+  // A fresh world refills the mouths that ran dry.
+  const WORLD2 = { barks: { walker: ['Mud to my knees.'], runner: ['Down the tractor ruts.'],
+                            brute: ['The silo shakes.'], calm: ['Gate stays shut, please.'] } };
+  const more = drain(v, crowd, WORLD2, 20);
+  check('a new world brings new lines and the talking resumes', more.length === 4);
+  check('the retired ones stay retired across worlds',
+        more.every(l => !said.includes(l)) && v.status().retired === 9);
+
+  // Two mobs, one of which has nothing left: the other must be found.
+  const v2 = silent();
+  const ONE_EACH = { barks: { walker: ['Only walker line.'], calm: ['Only calm line.'] } };
+  const pair = [mob('walker', 'hostile'), mob('walker', 'calm')];
+  const both = drain(v2, pair, ONE_EACH, 12);
+  check('a speaker that is out of lines is skipped, not allowed to silence the frame',
+        both.length === 2 && new Set(both).size === 2);
+
+  // Retirement is keyed on the full line, so truncation cannot resurrect one.
+  const v3 = silent();
+  const long = 'x'.repeat(VOICE.maxChars + 40);
+  const LONG = { barks: { walker: [long, long.slice(0, VOICE.maxChars + 20)] } };
+  const cut = drain(v3, [mob('walker', 'hostile')], LONG, 10);
+  check('a truncated line is retired by what the model wrote, not by what was shown',
+        cut.length === 2 && cut.every(l => l.length === VOICE.maxChars) &&
+        v3.status().retired === 2);
+
+  // Case and spacing are not a new line.
+  const v4 = silent();
+  const SAME = { barks: { walker: ['Harvest is late.', 'harvest   IS late.'] } };
+  const dup = drain(v4, [mob('walker', 'hostile')], SAME, 10);
+  check('the same sentence in different case or spacing is one line, not two',
+        dup.length === 1);
+
+  const v5 = silent();
+  v5.update(0, [mob('walker', 'hostile')], WORLD);
+  v5.update(v5.nextAt + 1, [mob('walker', 'hostile')], WORLD);
+  check('forget() puts them all back, for a deliberate restart',
+        v5.status().retired === 1 && (v5.forget(), v5.status().retired === 0));
+}
+
+
+console.log('--- muting silences the speaker, not the dialogue ---');
+{
+  let t = 0;
+  const mic = new MicMeter();
+  mic._nowMs = () => t;
+  const audio = fakeAudio(2);
+  let fetches = 0;
+  const v = new Voices({ now: () => t, mic,
+    fetchImpl: async () => { fetches++; return { ok: true, blob: async () => ({ size: 10 }) }; },
+    audioFactory: () => audio });
+
+  v.update(t, [mob('walker', 'hostile')], WORLD);
+  t = v.nextAt + 1;
+  v.update(t, [mob('walker', 'hostile')], WORLD);
+  await settle(); await settle(); await settle();
+  check('unmuted, the line is fetched and the mic is held', fetches === 1 && mic.suppressed);
+
+  v.setMuted(true);
+  check('muting stops the line that is playing and hands the mic back',
+        v.muted === true && !mic.suppressed);
+
+  // Expire the bubble, then wait out the gap before the next pick.
+  t = v.current.until + 1; v.update(t, [mob('walker', 'calm')], WORLD);
+  t = v.nextAt + 1;
+  const said = v.update(t, [mob('walker', 'calm')], WORLD);
+  await settle(); await settle();
+  check('a muted game still CHOOSES and SHOWS a line', !!said && said.text.length > 0);
+  check('but asks for no audio at all', fetches === 1);
+  check('and counts it as silent rather than failed',
+        v.status().silent === 1 && v.status().failures === 0 && v.status().muted === true);
+  check('the line is still retired while muted', v.status().retired === 2);
+
+  v.setMuted(false);
+  t = v.current.until + 1; v.update(t, [mob('walker', 'calm')], WORLD);
+  t = v.nextAt + 1;
+  v.update(t, [mob('walker', 'calm')], WORLD);
+  await settle(); await settle();
+  check('unmuting starts the voice again', fetches === 2 && v.status().muted === false);
+}
+
+console.log('--- the line goes to someone you can see ---');
+{
+  const seen = mob('walker', 'hostile');
+  const unseen = mob('runner', 'hostile');
+  // The first update only arms the gap, so every pick needs a second call.
+  const speak = (mobs, prefer) => {
+    const v = new Voices({ fetchImpl: null, audioFactory: null });
+    v.update(1, mobs, WORLD, prefer);
+    return v.update(v.nextAt + 1, mobs, WORLD, prefer);
+  };
+  let toSeen = 0;
+  for (let i = 0; i < 12; i++) if (speak([unseen, seen], m => m === seen).mob === seen) toSeen++;
+  check('an on-screen speaker gets first refusal, every time', toSeen === 12, `${toSeen}/12`);
+
+  // ...but being off-screen is never a reason for silence.
+  const only = speak([unseen], () => false);
+  check('with nobody on screen it still speaks rather than going quiet', !!only && only.mob === unseen);
+
+  const thrown = speak([seen], () => { throw new Error('bad predicate'); });
+  check('a predicate that throws is treated as "cannot see", not as a crash', !!thrown);
+}
+
 console.log(failures ? `\n  ${failures} FAILURE(S)` : '\n  all dialogue contracts hold');
 process.exit(failures ? 1 : 0);

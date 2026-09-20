@@ -80,7 +80,7 @@ TELEMETRY_LOCK = threading.Lock()
 # to reconnect, and nothing on the wire while the queue is empty.
 COMMANDS = {"items": [], "seq": 0}
 COMMANDS_LOCK = threading.Lock()
-COMMAND_KINDS = ("trim", "preset", "calibrate", "resetcal")
+COMMAND_KINDS = ("trim", "preset", "calibrate", "resetcal", "voices", "mode")
 COMMAND_TTL_S = 25.0
 COMMAND_MAX = 16
 
@@ -122,6 +122,16 @@ def command_parse(payload):
         if not isinstance(name, str) or not name.isalpha() or len(name) > 12:
             return None
         out["preset"] = name
+    elif kind == "mode":
+        want = payload.get("mode")
+        if want not in ("ar", "2d"):
+            return None
+        out["mode"] = want
+    elif kind == "voices":
+        # Absent means "toggle"; the headset decides. Present means set it,
+        # which is what the dashboard sends so its button cannot drift.
+        if payload.get("mute") is not None:
+            out["mute"] = bool(payload.get("mute"))
     return out
 
 # Polled at 5-10 Hz by the dashboard and the LED meter; keep them out of the journal.
@@ -535,6 +545,7 @@ class GameHandler(SimpleHTTPRequestHandler):
                     "idle_cleared": getattr(hub, "led_idle_cleared", False),
                     "age_ms": int((now - hub.led_at) * 1000) if hub and getattr(hub, "led_at", 0) else None,
                     "requests": getattr(hub, "led_requests", 0),
+                    "keepalive_writes": getattr(hub, "keepalive_writes", 0),
                     "written": getattr(hub, "led_written", 0)},
             "world": {"upstream": WORLD_UPSTREAM or None, "canned": WORLDS is not None},
             "telemetry": {"seq": tseq, "age_ms": int((now - tat) * 1000) if tat else None},

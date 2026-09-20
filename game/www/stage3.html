@@ -31,6 +31,11 @@
   #sensdots { display:flex; gap:3px; }
   #sensdots i { width:4px; height:4px; border-radius:50%; background:#4a525d; }
   #sensdots i.on { background:#4aa3ff; }
+  /* Not listening is worth seeing at a glance -- it changes what the whole
+     game does, and a dot two places further left does not say that. */
+  #sens.off { border-color:#6b4a10; background:rgba(255,176,32,.16); }
+  #sens.off #sensval { color:var(--warn); }
+  #sensdots i.mute { background:#6b4a10; }
   #calmsg { position:fixed; left:0; right:0; bottom:calc(60px + env(safe-area-inset-bottom));
             text-align:center; font-size:20px; font-weight:800; color:#ffb020;
             text-shadow:0 2px 10px rgba(0,0,0,.9); display:none; pointer-events:none; }
@@ -69,10 +74,18 @@
   /* The blow itself: a red wash over the whole view, strongest on impact. */
   #hurt { position:fixed; inset:0; pointer-events:none; opacity:0;
           background:radial-gradient(ellipse at center, rgba(190,20,20,.10) 25%, rgba(190,20,20,.72) 100%); }
-  #scanhint { position:fixed; left:0; right:0; top:calc(74px + env(safe-area-inset-top));
-              text-align:center; font-size:15px; font-weight:700; color:#5be08a;
-              text-shadow:0 2px 8px rgba(0,0,0,.95); display:none; pointer-events:none; }
+  /* The scan is also a BUTTON. The handheld's stick button is the intended
+     way, but the controller goes flat or out of range and without a touch
+     path the room can never be repopulated -- the game just empties and
+     stays empty, which is exactly what it looked like. */
+  #scanhint { position:fixed; left:50%; transform:translateX(-50%);
+              top:calc(74px + env(safe-area-inset-top));
+              font-size:15px; font-weight:800; letter-spacing:.5px; color:#04240f;
+              background:rgba(91,224,138,.95); border:0; border-radius:999px;
+              padding:9px 16px; display:none; pointer-events:auto;
+              font-family:inherit; width:auto; margin:0; }
   #scanhint.on { display:block; }
+  #scanhint:active { background:#3fb96c; }
   /* Tracking loss looks exactly like a crash from the outside: the picture
      stops moving. Saying so turns a freeze into feedback. */
   #tracklost { position:fixed; left:0; right:0; top:42%; text-align:center;
@@ -93,6 +106,10 @@
                   margin-left:-6px; background:inherit; border-right:1px solid inherit;
                   border-bottom:1px solid inherit; transform:rotate(45deg); }
   #bubble .mute { display:block; font-size:11px; font-weight:400; color:#8b96a5; margin-top:3px; }
+  /* Clamped to an edge because the speaker is off to the side or behind: the
+     tail would point at nothing, so it becomes an arrow towards them. */
+  #bubble.edge .tail { display:none; }
+  #bubble .to { display:inline-block; margin-right:5px; opacity:.75; font-weight:900; }
   #tracklost small { display:block; font-size:14px; font-weight:400; color:#e8ecf1; margin-top:4px; }
   #clock.ready { color:#5be08a; font-size:32px; letter-spacing:1px; }
   /* Landscape is the shape the game is played in: the clock and the world
@@ -108,7 +125,10 @@
     #pad { top:calc(60px + env(safe-area-inset-top)); }
     #padmsg { top:calc(30px + env(safe-area-inset-top)); }
     #clock.incoming, #clock.ready { font-size:26px; }
-    #scanhint { top:calc(56px + env(safe-area-inset-top)); text-align:left; left:14px; right:120px; font-size:13px; }
+    /* Centred and shrink-to-fit: pinning both edges here stretched the
+       button across the screen and the translate pushed its text off it. */
+    #scanhint { top:calc(52px + env(safe-area-inset-top)); left:50%; right:auto;
+                font-size:13px; padding:7px 14px; }
     #hearts svg { width:20px; height:18px; }
     #world { bottom:calc(10px + env(safe-area-inset-bottom)); right:12px; left:auto;
              text-align:right; font-size:16px; max-width:46vw; }
@@ -124,6 +144,13 @@
             text-align:center; margin:10px 0; }
   body.portrait #rotate { display:block; }
   body.portrait #enter { display:none; }
+  /* 2D needs no pose and no camera, so it is offered in either orientation. */
+  #flat { background:#2a3038; margin-top:8px; }
+  #flathint { font-size:13px; }
+  /* In 2D the canvas IS the world, so it sits behind the same HUD. */
+  #flatcanvas { position:fixed; inset:0; width:100%; height:100%; display:block; z-index:0; }
+  body.flat #hud { z-index:2; }
+  body.flat #tracklost { display:none !important; }
 </style>
 </head><body class="launch">
 <h1>Stage 3 — countdown + world swap</h1>
@@ -133,6 +160,10 @@ runs, so the swap at zero costs no frames. If it is late the clock does not
 wait — it shows INCOMING and swaps the moment it lands. Canned worlds only;
 the model is not wired yet.</div>
 <button id="enter">ENTER AR</button>
+<button id="flat" class="alt">PLAY ON SCREEN (2D)</button>
+<div class="sub" id="flathint">No headset and no walking: the handheld's stick
+drives. Push to walk, left and right to turn. Everything else &mdash; mobs,
+dialogue, the snapshot, the lamps &mdash; behaves exactly as it does in AR.</div>
 <div id="rotate">TURN THE PHONE SIDEWAYS<br><span style="font-weight:400;font-size:14px;color:#c6cfda">
 The AR session keeps the orientation it starts in, so it has to begin in landscape.
 Auto-rotate must be on.</span></div>
@@ -142,7 +173,7 @@ Auto-rotate must be on.</span></div>
      dom-overlay root: WebXR renders only the root element's subtree. -->
 <div id="hud">
 <div id="clock"></div>
-<div id="scanhint"></div>
+<button id="scanhint"></button>
 <div id="tracklost">FINDING THE ROOM<small>hold still for a moment and keep the camera on something with detail</small></div>
 <div id="status"><span id="score">0000</span><div id="hearts"></div></div>
 <div id="hurt"></div>
@@ -175,6 +206,7 @@ import { Aura } from './js/aura.js';
 import { Voices } from './js/voices.js';
 import { Player, PLAYER, Score } from './js/player.js';
 import { Population, MOOD } from './js/population.js';
+import { FlatRig, FLAT, makeFlatRenderer, makeBackdrop } from './js/flatmode.js';
 
 const Q = new URLSearchParams(location.search);
 const CYCLE_MS = Math.max(5000, parseInt(Q.get('cycle') || '30000', 10));
@@ -254,12 +286,18 @@ try {
 } catch (e) { /* older browsers: harmless */ }
 
 const sensVal = document.getElementById('sensval');
+const sensBtn = document.getElementById('sens');
 const sensDots = document.getElementById('sensdots');
 for (let i = 0; i < PRESET_ORDER.length; i++) sensDots.appendChild(document.createElement('i'));
 function refreshSensButtons() {
   sensVal.textContent = (PRESETS[mic.preset] || PRESETS.normal).label.toUpperCase();
   const at = mic.presetIndex;
-  sensDots.querySelectorAll('i').forEach((d, i) => d.classList.toggle('on', i === at));
+  const off = !mic.listening;
+  sensBtn.classList.toggle('off', off);
+  sensDots.querySelectorAll('i').forEach((d, i) => {
+    d.classList.toggle('on', i === at && !off);
+    d.classList.toggle('mute', i === at && off);
+  });
 }
 // One chip, one step per tap -- the same action as a press of the handheld's
 // button, so both controls behave identically and neither has to be held.
@@ -311,6 +349,11 @@ function applyCommand(c) {
       startCalibration();
     } else if (c.cmd === 'resetcal') {
       mic.resetCal(); refreshSensButtons(); flash('CAL RESET');
+    } else if (c.cmd === 'voices') {
+      const m = voices.setMuted(c.mute === undefined ? !voices.muted : !!c.mute);
+      flash(m ? 'DIALOGUE MUTED' : 'DIALOGUE ON');
+    } else if (c.cmd === 'mode') {
+      applyMode(c.mode);
     }
     log('command from dashboard:', JSON.stringify(c));
   } catch (e) { warn('command failed (ignored):', e); }
@@ -366,15 +409,108 @@ function checkOrientation() {
   document.body.classList.toggle('portrait', portrait);
   return !portrait;
 }
+// A desktop browser reports navigator.xr but no immersive-ar device, so the
+// button looks live and only fails on tap. Say so on load instead.
+(async () => {
+  try {
+    const ok = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar');
+    if (!ok) document.getElementById('err').textContent =
+      'This browser cannot start immersive AR' +
+      (navigator.xr ? ' (no AR device).' : ' (no WebXR).') +
+      ' Open this page in Chrome on the Android phone.';
+  } catch (e) { warn('AR support probe failed (ignored):', e); }
+})();
+
 addEventListener('resize', checkOrientation);
 addEventListener('orientationchange', () => setTimeout(checkOrientation, 120));
 checkOrientation();
 
-document.getElementById('enter').addEventListener('click', run);
+document.getElementById('flat').addEventListener('click', () => {
+  run(true).catch(e => {
+    warn('2D run() failed:', e);
+    document.getElementById('err').textContent = String(e && e.message || e);
+    armRetry('ENTER AR');
+  });
+});
+document.getElementById('enter').addEventListener('click', () => {
+  // A rejection anywhere in run() used to leave the button disabled and grey
+  // with nothing on screen to say why, which reads as "the button is dead".
+  run().catch(e => {
+    warn('run() failed:', e);
+    document.getElementById('err').textContent = String(e && e.message || e);
+    armRetry('ENTER AR');
+  });
+});
 
-async function run() {
+// The escape hatch. requestSession() stays PENDING for as long as Chrome's
+// "create a 3D map of your surroundings" prompt is unanswered -- and if that
+// prompt is dismissed by a swipe, or the origin already holds a Block, it can
+// stay pending forever. Nothing below it ever runs, so without this the button
+// is greyed at STARTING… with no error for the rest of the page's life.
+const ENTER_WATCHDOG_MS = Number(Q.get('enterwait') || 12000);
+function armRetry(label) {
   const btn = document.getElementById('enter');
-  btn.disabled = true; btn.textContent = 'STARTING…';
+  btn.disabled = false;
+  btn.textContent = label;
+}
+function enterWatchdog() {
+  return setTimeout(() => {
+    const btn = document.getElementById('enter');
+    if (!btn.disabled) return;                       // already resolved
+    document.getElementById('err').innerHTML =
+      'Chrome has not answered the AR permission yet. Look for the ' +
+      '<b>"create a 3D map of your surroundings"</b> prompt and tap <b>ALLOW</b>. ' +
+      'If there is no prompt, tap the padlock in the address bar &rarr; ' +
+      'Permissions, clear it, and reload.';
+    btn.disabled = false;
+    btn.textContent = 'RELOAD & RETRY';
+    btn.onclick = () => location.reload();           // a clean retry, no second session
+    warn('startAR did not settle within', ENTER_WATCHDOG_MS, 'ms');
+  }, ENTER_WATCHDOG_MS);
+}
+
+// Which mode is live, so the dashboard can ask for the other one and so a
+// second request for the mode already running is a no-op rather than a
+// restart in the middle of a demo.
+let currentMode = null;          // 'ar' | '2d' while a run is going
+let currentSession = null;
+let pendingMode = null;          // what to start once the current run tears down
+
+/**
+ * Switch modes from the dashboard.
+ *
+ * 2D can be entered from anywhere, because it needs nothing from the browser.
+ * AR CANNOT: requestSession() requires a user activation, and a command
+ * arriving over HTTP is not one. So asking for AR tears down 2D and says, on
+ * the phone, that the last step is a tap. Pretending otherwise would fail
+ * silently, which is the worst of the options.
+ */
+function applyMode(want) {
+  const m = (want === '2d' || want === 'flat' || want === 'screen') ? '2d' : 'ar';
+  if (m === currentMode) { flash('ALREADY IN ' + m.toUpperCase()); return; }
+  if (m === '2d') {
+    if (currentMode === 'ar' && currentSession) {
+      pendingMode = '2d';                     // picked up by onEnd
+      flash('SWITCHING TO 2D');
+      try { currentSession.end(); }
+      catch (e) { pendingMode = null; warn('could not end the session:', e); }
+    } else {
+      run(true).catch(e => warn('2D start failed:', e));
+    }
+    return;
+  }
+  if (currentMode === '2d' && typeof window.__jzLeave === 'function') window.__jzLeave();
+  flash('TAP ENTER AR', 6000);
+  document.getElementById('err').innerHTML =
+    'Ready for AR &mdash; tap <b>ENTER AR</b>. Chrome only starts an immersive ' +
+    'session from a tap on the phone, so this last step cannot be done from the dashboard.';
+}
+
+// `flat` is the whole difference between the two modes at this level: no
+// session, no passthrough, and the stick becomes the legs.
+async function run(flat = false) {
+  const btn = document.getElementById(flat ? 'flat' : 'enter');
+  btn.disabled = true; btn.textContent = flat ? 'STARTING…' : 'STARTING…';
   document.getElementById('err').textContent = '';   // a retry starts clean
   // Kick the mic off FIRST, without awaiting: getUserMedia and the
   // AudioContext resume must happen inside this same user gesture, not lazily
@@ -391,13 +527,21 @@ async function run() {
     return st;
   });
 
-  let session;
-  try {
-    session = await startAR({ overlayRoot: document.getElementById('hud') });
-  } catch (e) {
-    document.getElementById('err').textContent = String(e);
-    btn.disabled = false; btn.textContent = 'ENTER AR'; return;
+  let session = null;
+  if (!flat) {
+    const wd = enterWatchdog();
+    try {
+      session = await startAR({ overlayRoot: document.getElementById('hud') });
+    } catch (e) {
+      clearTimeout(wd);
+      document.getElementById('err').textContent = String(e);
+      btn.disabled = false; btn.textContent = 'ENTER AR'; return;
+    }
+    clearTimeout(wd);
   }
+  document.body.classList.toggle('flat', !!flat);
+  currentMode = flat ? '2d' : 'ar';
+  currentSession = session;
   document.body.classList.remove('launch');
   for (const id of ['hud','clock','world']) document.getElementById(id).classList.add('on');
   micctl.classList.add('on');
@@ -407,8 +551,12 @@ async function run() {
   renderHearts();
   renderScore(false);
 
-  const renderer = makeRenderer(session, { antialias: AA, fbScale: FB_SCALE });
+  const renderer = flat ? makeFlatRenderer(THREE, { antialias: true })
+                        : makeRenderer(session, { antialias: AA, fbScale: FB_SCALE });
   const { scene, camera } = basicScene();
+  // On a flat screen there is no room behind the sprites, so one is drawn.
+  const backdrop = flat ? makeBackdrop(THREE, scene) : null;
+  const rig = flat ? new FlatRig(camera) : null;
   const weapon = new Weapon(scene);
   // A swing no longer touches anything by itself: it throws a slash that flies
   // out and damages whatever it reaches.
@@ -422,22 +570,48 @@ async function run() {
   const voices = new Voices({ mic, log, warn });
   const bubbleEl = document.getElementById('bubble');
   const bubbleV = new THREE.Vector3();
+  // Counted so "I never see the popups" is answerable from /telemetry instead
+  // of from someone's memory of the last run.
+  let bubbleShown = 0, bubbleEdge = 0, bubbleHidden = 0, bubbleFail = 0;
   let pendingSlashes = 0;
-  await renderer.xr.setSession(session);
-  const gotHz = requestFrameRate(session, TARGET_HZ);
+  if (!flat) await renderer.xr.setSession(session);
+  const gotHz = flat ? null : requestFrameRate(session, TARGET_HZ);
+  // Hold the screen awake for the whole session. An AR session dies with the
+  // screen, and a game that ends itself while you are still looking at the
+  // room is indistinguishable from a crash. Re-taken when the page becomes
+  // visible again. Best effort: where there is no wake lock, nothing changes.
+  let wakeLock = null;
+  async function holdScreen() {
+    try {
+      if (!navigator.wakeLock || wakeLock) return;
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+      log('screen wake lock held');
+    } catch (e) { warn('no wake lock (the screen may sleep):', e && e.name || e); }
+  }
+  holdScreen();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') holdScreen();
+  });
   // Camera frame -> JPEG -> POST /world. The texture only exists inside the
   // frame callback, so the grab runs from the render loop (worldSrc.tick).
   const gl = renderer.getContext();
-  const camSrc = NOFRAME ? null : new CameraFrameSource(session, gl);
+  // No session means no camera image, so the world falls back to the canned
+  // set. worldsource already records that as the reason rather than failing.
+  const camSrc = (flat || NOFRAME) ? null : new CameraFrameSource(session, gl);
   // The camera image hangs off the frame's views, and views need a viewer
   // pose. Against local-floor that pose is null until ARCore has tracked
   // (a phone lying still never gets one); against the 'viewer' space it
   // always exists, so the frame can be grabbed before tracking is up.
   let viewerSpace = null;
-  try { viewerSpace = await session.requestReferenceSpace('viewer'); }
-  catch (e) { warn('viewer reference space unavailable:', e); }
+  if (!flat) {
+    try { viewerSpace = await session.requestReferenceSpace('viewer'); }
+    catch (e) { warn('viewer reference space unavailable:', e); }
+  }
   const grabber = new FrameGrabber(gl, { maxWidth: GRAB_W, flipY: FLIP });
-  if (!NOFRAME) { grabber.warm(886, 1920); renderer.resetState(); }   // compile now, not mid-countdown
+  // Nothing to grab without a camera image, so the shader is not compiled
+  // either -- it would cost a stall for a readback that can never happen.
+  if (!NOFRAME && !flat) { grabber.warm(886, 1920); renderer.resetState(); }
   const worldSrc = new WorldSource({ timeoutMs: FETCH_TIMEOUT_MS, log, warn });
   function grabFromFrame(frame) {
     if (!frame || !camSrc) return null;
@@ -460,7 +634,45 @@ async function run() {
   }
   // Tap anywhere that is not a control to swing. beforexrselect on the overlay
   // stops the mic buttons from also triggering a swing.
-  for (const ev of ['select', 'selectstart', 'selectend']) {
+  // ---- input, which is the one thing the two modes cannot share ----------
+  // AR has XRSession select events. A flat page has pointers, and it has to
+  // tell a TAP (throw) from a DRAG (turn), because without the handheld a
+  // drag is the only way to look around.
+  function swingNow(tag) {
+    selectEvents++;
+    try {
+      if (weapon.swing(performance.now())) {
+        pendingSlashes = Math.min(pendingSlashes + 1, 4);
+        log(tag, weapon.swings, weapon.name);
+      }
+    } catch (e) { swingError = String(e && e.message || e); warn('swing failed:', e); }
+  }
+  if (flat) {
+    const cv = renderer.domElement;
+    let downX = 0, downY = 0, lastX = 0, dragging = false, id = null;
+    const DRAG_PX = 12;                     // past this it is a look, not a tap
+    cv.style.touchAction = 'none';
+    cv.addEventListener('pointerdown', e => {
+      if (id !== null) return;
+      id = e.pointerId; downX = lastX = e.clientX; downY = e.clientY; dragging = false;
+      try { cv.setPointerCapture(id); } catch (err) {}
+    });
+    cv.addEventListener('pointermove', e => {
+      if (e.pointerId !== id) return;
+      if (!dragging && Math.hypot(e.clientX - downX, e.clientY - downY) > DRAG_PX) dragging = true;
+      if (dragging) { rig.look(e.clientX - lastX); domPointers++; }
+      lastX = e.clientX;
+    });
+    const up = e => {
+      if (e.pointerId !== id) return;
+      try { cv.releasePointerCapture(id); } catch (err) {}
+      id = null;
+      if (!dragging) swingNow('swing (tap)');
+    };
+    cv.addEventListener('pointerup', up);
+    cv.addEventListener('pointercancel', e => { if (e.pointerId === id) id = null; });
+  }
+  for (const ev of (flat ? [] : ['select', 'selectstart', 'selectend'])) {
     session.addEventListener(ev, () => {
       selectEvents++;
       if (ev !== 'select') return;
@@ -478,11 +690,15 @@ async function run() {
   // the canvas swings too, so the weapon is never dead.
   window.addEventListener('pointerdown', (e) => {
     domPointers++;
-    if (e.target && e.target.closest && e.target.closest('#micctl')) return;
+    if (e.target && e.target.closest && e.target.closest('#micctl, #scanhint')) return;
     try { if (weapon.swing(performance.now())) pendingSlashes = Math.min(pendingSlashes + 1, 4); }
     catch (err) { warn('swing:', err); }
   }, { passive: true });
-  session.addEventListener('end', onEnd);
+  if (session) session.addEventListener('end', onEnd);
+  // In AR the headset ends the session and onEnd follows. In 2D there is no
+  // session to end, so leaving is an explicit call.
+  function leaveFlat() { try { onEnd(); } catch (e) { warn('leaveFlat:', e); } }
+  if (flat) window.__jzLeave = leaveFlat;
 
   // Explicitly re-check the mic AFTER the immersive session is live: ARCore
   // holds the camera, and we want to know for certain whether it also takes
@@ -573,9 +789,25 @@ async function run() {
       // The stick button takes the snapshot the next world is built from --
       // but only once the cooldown has run out. Pressing early does nothing.
       if (p.swPressed && started) takeSnapshot(t);
-      if (p.xFlick) cycleTarget(p.xFlick);
+      // In AR a flick of the stick cycles the target. In 2D that same axis is
+      // steering, so a hard turn would cycle a target on every sweep.
+      if (p.xFlick && !flat) cycleTarget(p.xFlick);
     } catch (e) { warn('pad input (ignored):', e); }
   }
+  // The room's state belongs on screen: "no enemies" should read as "it is
+  // quiet in here", not as the game having died.
+  let lastWorld = null;
+  function roomTag() {
+    const calm = pop.mood === MOOD.CALM;
+    return ` <span style="color:${calm ? '#6bff8f' : '#ff9a9a'}">· ${calm ? 'CALM' : 'HOSTILE'}</span>`;
+  }
+  function renderBanner() {
+    if (!lastWorld) return;
+    const barks = lastWorld.barks ? Object.values(lastWorld.barks).flat() : [];
+    worldEl.innerHTML = `${lastWorld.biome.toUpperCase()} · ${lastWorld.name}` + roomTag() +
+      `<small>${barks.length ? '“' + barks[Math.floor(Math.random() * barks.length)] + '”' : ''}</small>`;
+  }
+
   function takeSnapshot(t) {
     if (!cycle.manual) { cycle.skip(t); flash('NEXT WORLD'); return; }
     if (cycle.trigger(t)) {
@@ -598,33 +830,54 @@ async function run() {
     try {
       if (!saying || !saying.mob || !saying.mob.group || saying.mob.dead) {
         bubbleEl.classList.remove('on');
+        if (saying) bubbleHidden++;
         return;
       }
       const g = saying.mob.group;
       const h = (g.userData && g.userData.height) || 1.7;
       bubbleV.set(g.position.x, (g.position.y || 0) + h * 1.02, g.position.z);
       bubbleV.project(xrCam);
-      if (bubbleV.z > 1 || bubbleV.x < -1.2 || bubbleV.x > 1.2 || bubbleV.y < -1.2 || bubbleV.y > 1.4) {
-        bubbleEl.classList.remove('on');
-        return;
-      }
-      const x = (bubbleV.x * 0.5 + 0.5) * window.innerWidth;
-      const y = (-bubbleV.y * 0.5 + 0.5) * window.innerHeight;
-      if (bubbleEl.dataset.line !== saying.text) {
-        bubbleEl.dataset.line = saying.text;
-        // A line with no audio still gets said, and says why.
-        bubbleEl.innerHTML = saying.text.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) +
-          (saying.spoken ? '' : '<span class="mute">(no voice: ' +
-            String(voices.lastError || 'audio unavailable').slice(0, 48) + ')</span>') +
-          '<i class="tail"></i>';
+      // Behind the camera the projection mirrors, so x has to be flipped back
+      // before it means anything.
+      const behind = bubbleV.z > 1;
+      let nx = behind ? -bubbleV.x : bubbleV.x;
+      let ny = behind ? -0.75 : bubbleV.y;          // behind you reads along the bottom
+      // Mobs stand in a ring, so most of the time the speaker is NOT in the
+      // ~60 degrees you are looking at. Hiding the line then meant almost
+      // every line went unseen. It is clamped to the edge it left instead,
+      // with an arrow towards whoever is talking.
+      const edge = behind || nx < -0.92 || nx > 0.92 || ny < -0.92 || ny > 0.92;
+      nx = Math.max(-0.92, Math.min(0.92, nx));
+      ny = Math.max(-0.92, Math.min(0.92, ny));
+      const x = (nx * 0.5 + 0.5) * window.innerWidth;
+      const y = (-ny * 0.5 + 0.5) * window.innerHeight;
+      const arrow = !edge ? '' : (behind ? '\u21ba' : (nx <= -0.92 ? '\u25c0' : (nx >= 0.92 ? '\u25b6' : (ny >= 0.92 ? '\u25b2' : '\u25bc'))));
+      const sig = saying.text + '|' + arrow + '|' + (saying.spoken ? '1' : '0');
+      if (bubbleEl.dataset.line !== sig) {
+        bubbleEl.dataset.line = sig;
+        // A line with no audio still gets said, and says why -- unless it was
+        // muted on purpose, which is not a failure worth captioning.
+        const why = voices.muted ? '' : (saying.spoken ? '' :
+          '<span class="mute">(no voice: ' +
+          String(voices.lastError || 'audio unavailable').slice(0, 48) + ')</span>');
+        bubbleEl.innerHTML = (arrow ? '<span class="to">' + arrow + '</span>' : '') +
+          saying.text.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) +
+          why + '<i class="tail"></i>';
         bubbleEl.classList.toggle('calm', saying.role === 'calm');
         bubbleEl.classList.toggle('hostile', saying.role !== 'calm');
+        bubbleEl.classList.toggle('edge', !!edge);
       }
       bubbleEl.style.left = Math.round(x) + 'px';
       bubbleEl.style.top = Math.round(Math.max(44, y)) + 'px';
       bubbleEl.classList.add('on');
-    } catch (e) { bubbleEl.classList.remove('on'); }
+      bubbleShown++; if (edge) bubbleEdge++;
+    } catch (e) { bubbleEl.classList.remove('on'); bubbleFail++; }
   }
+
+  scanHint.addEventListener('click', (e) => {
+    e.preventDefault();
+    takeSnapshot(performance.now());
+  });
 
   function cycleTarget(dir) {
     if (!mobs.length) { target = -1; return; }
@@ -658,6 +911,7 @@ async function run() {
     fetchWorld: () => worldSrc.request(worldParams()).then(w => {
       lastFetchMs = worldSrc.lastFetchMs;
       if (!w.accent) w.accent = ACCENT[w.biome] || '#8a8f98';
+      if (backdrop) backdrop.setAccent(w.accent);
       return w;
     }),
     // Geometry is BUILT here, during the countdown, hidden. The swap frame
@@ -682,7 +936,8 @@ async function run() {
       clockEl.classList.remove('incoming');
       try { weapon.setBiome(world.biome); } catch (e) { warn('weapon swap:', e); }
       const barks = world && world.barks ? Object.values(world.barks).flat() : [];
-      worldEl.innerHTML = `${world.biome.toUpperCase()} · ${world.name}` +
+      lastWorld = world;
+      worldEl.innerHTML = `${world.biome.toUpperCase()} · ${world.name}` + roomTag() +
         `<small>${barks.length ? '“' + barks[Math.floor(Math.random()*barks.length)] + '”' : ''}</small>`;
       log('SWAP ->', world.biome, world.name, late ? '(late)' : '(on time)');
     },
@@ -772,6 +1027,7 @@ async function run() {
           slash: Object.assign(slashes.stats(), { thrownFromLoop: throws }),
           aura: aura.stats(),
           voices: voices.status(),
+          bubble: { shown: bubbleShown, atEdge: bubbleEdge, hidden: bubbleHidden, errors: bubbleFail },
           player: Object.assign(player.status(performance.now()), { score: score.status() }),
           room: Object.assign(pop.status(), { changes: moodChanges,
                  calm: mobs.filter(m => m.mood === 'calm' && !m.leaving).length,
@@ -781,6 +1037,8 @@ async function run() {
                   swinging: weapon.swinging(performance.now()),
                   error: weaponInitError || swingError,
                   selectEvents, domPointers, padSwings, dbg: weapon.debug() },
+          mode: flat ? '2d' : 'ar',
+          rig: rig ? rig.status() : null,
           controller: pad.status(performance.now()),
           leds: leds.status(),
           target: target >= 0 ? target + 1 : null,
@@ -810,18 +1068,27 @@ async function run() {
       pushTelemetry(t, micLive);
 
 
-      if (!frame) { trackingOk = false; renderer.render(scene, camera); return; }
-      const refSpace = renderer.xr.getReferenceSpace();
-      if (!refSpace) { trackingOk = false; renderer.render(scene, camera); return; }
-      const pose = frame.getViewerPose(refSpace);
-      trackingOk = !!pose;                    // was never set true before (telemetry bug)
-      const xrCam = renderer.xr.getCamera();
+      const dt = lastT ? Math.min((t - lastT) / 1000, 0.1) : 0;
+      lastT = t;
+      let xrCam;
+      if (flat) {
+        // The stick is the legs. There is no pose to lose, so tracking is
+        // always good and the FINDING THE ROOM path never runs.
+        rig.update(dt, padIn);
+        xrCam = camera;
+        trackingOk = true;
+      } else {
+        if (!frame) { trackingOk = false; renderer.render(scene, camera); return; }
+        const refSpace = renderer.xr.getReferenceSpace();
+        if (!refSpace) { trackingOk = false; renderer.render(scene, camera); return; }
+        const pose = frame.getViewerPose(refSpace);
+        trackingOk = !!pose;                  // was never set true before (telemetry bug)
+        xrCam = renderer.xr.getCamera();
+      }
       playerPos.setFromMatrixPosition(xrCam.matrixWorld);
       // Placed from the tracked camera. If tracking drops the mesh keeps its
       // last good transform rather than snapping to the world origin.
       weapon.update(performance.now(), xrCam.matrixWorld);
-      const dt = lastT ? Math.min((t - lastT) / 1000, 0.1) : 0;
-      lastT = t;
 
       if (!started && t > 1200) { started = true; cycle.start(t); }
       if (started) cycle.tick(t);
@@ -831,7 +1098,8 @@ async function run() {
       const wasReady = clockEl.classList.contains('ready');
       clockEl.classList.toggle('ready', !!cycle.ready && !cycle.awaiting);
       scanHint.classList.toggle('on', !!cycle.ready && !cycle.awaiting);
-      scanHint.textContent = 'press the stick button to scan the room';
+      scanHint.textContent = pad.connected ? 'SCAN THE ROOM · or press the stick'
+                                           : 'TAP TO SCAN THE ROOM';
       clockEl.textContent = !started ? '…'
         : (rem === null ? 'SCANNING…'
         : (cycle.ready ? 'SCAN READY' : String(Math.ceil(rem / 1000))));
@@ -851,17 +1119,29 @@ async function run() {
       const moodNow = pop.update(dt * 1000, micLive ? mic.hostility : 0);
       if (moodNow) {
         const w0 = cycle.current || {};
+        // The changeover has to OVERLAP, or the room empties for ten seconds
+        // and looks broken. The departing crowd is staggered rather than all
+        // turning at once, and the arrivals come in at the normal ring, close
+        // enough to be seen immediately.
         let leaving = 0;
-        for (const m of mobs) if (m.mood !== moodNow && m.leave()) leaving++;
+        const going = mobs.filter(m => m.mood !== moodNow && !m.dying && !m.leaving);
+        going.forEach((m, i) => {
+          if (i < 2) { if (m.leave()) leaving++; return; }   // the first two go now
+          const delay = 900 + i * 700;                       // the rest drift off
+          setTimeout(() => { try { if (m.leave()) moodChanges += 0; } catch (e) {} }, delay);
+        });
+        leaving = going.length;
         const incoming = spawnRing(scene, playerPos.x, playerPos.z, {
           count: Math.max(2, Math.round((w0.count_scale || 1) * (moodNow === MOOD.CALM ? 3 : 5))),
-          radius: RING.radius * 1.7, jitter: RING.jitter,
+          radius: RING.radius, jitter: RING.jitter,
           speedScale: w0.speed_scale, bruteBias: moodNow === MOOD.CALM ? 0 : w0.brute_bias,
           accent: w0.accent, biome: w0.biome, hpBonus: w0.hp_bonus, mood: moodNow,
         });
         mobs = mobs.concat(incoming);
         moodChanges++;
-        flash(moodNow === MOOD.CALM ? 'THE ROOM GOES QUIET' : 'SOMETHING HEARD YOU', 2200);
+        renderBanner();
+        flash(moodNow === MOOD.CALM ? 'THE ROOM GOES QUIET — THEY ARE LEAVING'
+                                    : 'SOMETHING HEARD YOU — THEY ARE COMING', 2400);
         log('mood ->', moodNow, '| leaving', leaving, '| arriving', incoming.length);
       }
 
@@ -891,7 +1171,14 @@ async function run() {
       hurtEl.style.opacity = String(player.flash(nowMs).toFixed(3));
       aura.update(dt, mobs);
       // Someone says something, and the line follows their head.
-      const saying = voices.update(performance.now(), mobs, cycle.current);
+      // Offer the talkers you are actually looking at first.
+      const saying = voices.update(performance.now(), mobs, cycle.current, m => {
+        try {
+          const g = m.group; if (!g) return false;
+          bubbleV.set(g.position.x, g.position.y || 0, g.position.z).project(xrCam);
+          return bubbleV.z <= 1 && Math.abs(bubbleV.x) <= 0.85 && Math.abs(bubbleV.y) <= 0.85;
+        } catch (e) { return false; }
+      });
       drawBubble(saying, xrCam);
       const sl = slashes.update(dt, mobs, playerPos.x, playerPos.z);
       if (sl.kills) {
@@ -941,9 +1228,19 @@ async function run() {
     }
   });
 
+  let ended = false;
   function onEnd() {
+    if (ended) return;                       // onEnd is reachable twice in 2D
+    ended = true;
     try {
       renderer.setAnimationLoop(null);
+      if (flat) {
+        try { backdrop.dispose(); } catch (e) {}
+        try { removeEventListener('resize', renderer._jzResize); } catch (e) {}
+        try { renderer.domElement.remove(); renderer.dispose(); } catch (e) {}
+        try { delete window.__jzLeave; } catch (e) { window.__jzLeave = null; }
+        document.body.classList.remove('flat');
+      }
       try { mic.stop(); } catch (e) { warn('mic.stop:', e); }
       try { weapon.dispose(); } catch (e) { warn('weapon.dispose:', e); }
       try { leds.off(); } catch (e) {}
@@ -956,13 +1253,16 @@ async function run() {
       try { slashes.dispose(); } catch (e) { warn('slash dispose:', e); }
       try { aura.dispose(); } catch (e) { warn('aura dispose:', e); }
       try { voices.clear(); } catch (e) { warn('voices clear:', e); }
+      try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
       bubbleEl.classList.remove('on');
       for (const m of mobs.concat(disposeQueue)) { try { m.dispose(scene); } catch(e){} }
       mobs = []; disposeQueue = [];
       trackEl.classList.remove('on');
       for (const id of ['hud','clock','world']) document.getElementById(id).classList.remove('on');
       document.body.classList.add('launch');
-      btn.disabled = false; btn.textContent = 'ENTER AR';
+      currentMode = null; currentSession = null;
+      btn.disabled = false;
+      btn.textContent = flat ? 'PLAY ON SCREEN (2D)' : 'ENTER AR';
       checkOrientation();                 // landscape is still required to re-enter
       document.getElementById('err').textContent =
         `Last run: ${cycle.swaps} swaps (${cycle.lateSwaps} late), worst swap ` +
@@ -972,6 +1272,14 @@ async function run() {
         lateSwaps:cycle.lateSwaps, maxSwapMs:cycle.maxSwapMs, maxFrameMs,
         fetchFails:cycle.fails });
     } catch (e) { warn('onEnd:', e); }
+    // A mode switch asked for this teardown; start what it wanted. Deferred a
+    // tick so the session is fully gone before the next renderer is built.
+    if (pendingMode) {
+      const next = pendingMode; pendingMode = null;
+      setTimeout(() => {
+        if (next === '2d') run(true).catch(e => warn('2D start after switch failed:', e));
+      }, 80);
+    }
   }
 }
 </script>

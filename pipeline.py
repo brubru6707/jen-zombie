@@ -137,8 +137,8 @@ Reply with ONLY a JSON object, no prose, no markdown fences, with exactly these 
         fields += ('\n  "barks":        object with FOUR keys: '
                    f'{", ".join(ENEMY_TYPES)} and "calm".'
                    f'\n                  The first three ({", ".join(ENEMY_TYPES)}) are the '
-                   'undead: 2-3 short menacing lines each.'
-                   '\n                  "calm" is 2-3 lines spoken by the PEACEFUL locals who '
+                   'undead: SIX short menacing lines each, all different.'
+                   '\n                  "calm" is SIX lines spoken by the PEACEFUL locals who '
                    'live in this\n                  place -- a person or animal that belongs '
                    'here and means no harm.\n                  They are wary, weary or wry, '
                    'never threatening: they warn, greet,\n                  complain about the '
@@ -146,7 +146,10 @@ Reply with ONLY a JSON object, no prose, no markdown fences, with exactly these 
                    '\nEvery line MUST be 8 words or fewer and in character for the '
                    'chosen biome\n(a beach zombie says beach things, a lab zombie says '
                    'lab things, and the calm\nlocals of a farm sound like farmers, not like '
-                   'the zombies).')
+                   'the zombies).'
+                   '\nThe game retires a line permanently once it has been spoken, so six '
+                   'GENUINELY\ndifferent lines per key is the point: vary what they are '
+                   'about, not the wording.')
     return head + fields
 
 
@@ -575,8 +578,17 @@ def resolve_biome(raw):
     return None, f"no match for {raw!r}"
 
 
+# Nothing is ever said twice, so a world has to arrive carrying enough
+# dialogue to last a stay in it. Six per role is 24 lines a world.
+BARKS_PER_ROLE = int(os.environ.get("JZ_BARKS_PER_ROLE", "6"))
+
+
 def clamp_barks(raw):
-    """Drop lines over 8 words, cap at 3 per enemy type. Returns dict (may be empty)."""
+    """Drop lines over 8 words, cap at BARKS_PER_ROLE each. Returns dict (may be empty).
+
+    Deduplicated case-insensitively: the client retires a line permanently the
+    first time it is spoken, so a duplicate entry would only waste a slot.
+    """
     out = {}
     if not isinstance(raw, dict):
         return out
@@ -588,6 +600,7 @@ def clamp_barks(raw):
         if not isinstance(lines, list):
             continue
         kept = []
+        seen = set()
         for line in lines:
             if not isinstance(line, str):
                 continue
@@ -597,8 +610,11 @@ def clamp_barks(raw):
             if len(line.split()) > 8:
                 print(f"[world] dropped bark for {enemy!r} (>8 words): {line!r}")
                 continue
+            if line.lower() in seen:
+                continue
+            seen.add(line.lower())
             kept.append(line)
-            if len(kept) == 3:
+            if len(kept) == BARKS_PER_ROLE:
                 break
         if kept:
             out[enemy.strip().lower()] = kept

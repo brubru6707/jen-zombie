@@ -51,6 +51,22 @@ STALE_S = float(os.environ.get("JZ_STALE_S", "2.0"))
 # every couple of seconds; if nothing has driven the lamps for this long,
 # nobody is driving them and they go dark, once.
 LED_IDLE_S = float(os.environ.get("JZ_LED_IDLE_S", "5.0"))
+# Keeping the power bank awake.
+#
+# The board's own KEEP burst is a CPU spin worth a few tens of milliamps, and
+# the lamp that goes with it is lit ONLY while TCP is down -- so the draw
+# collapses at the exact moment the controller connects, which is why a bank
+# drops it about thirty seconds in. The radio is the big consumer on an ESP32
+# (tens of mA associated and idle, around a hundred while actually receiving),
+# so the strongest lever left without touching the firmware is to keep talking
+# to it. These writes are deliberately redundant: they repeat the value the
+# board already has, so nothing changes on the lamps, but the radio has to stay
+# out of modem sleep to receive them.
+LED_KEEPALIVE_HZ = float(os.environ.get("JZ_LED_KEEPALIVE_HZ", "25"))
+# A floor under every lamp, in case the radio alone is not enough: three LEDs
+# through 220 ohm are worth roughly 6 mA each at full. Off by default, because
+# lamps that are never dark look like a stuck meter.
+LED_FLOOR = max(0.0, min(1.0, float(os.environ.get("JZ_LED_FLOOR", "0"))))
 ADC_MAX = 4095
 DEADZONE = 0.05          # matches game/inputs.py ADC_DEADZONE
 
@@ -82,6 +98,7 @@ class Hub:
         self.led_requests = 0
         self.led_written = 0
         self.led_idle_cleared = False   # lamps already darkened for want of a driver
+        self.keepalive_writes = 0       # redundant writes, purely to keep the radio up
 
     def set_from_jz1(self, ax, ay, sw, atk, sens):
         with self.lock:
@@ -196,6 +213,47 @@ def esp_reader(conn):
                 HUB.esp_sock = None
         broadcast(HUB.mark_disconnected())
         print("[esp] controller disconnected")
+
+
+def _write_led(sock, led):
+    """One LED line onto the board's socket. Returns True if it went out."""
+    if sock is None:
+        return False
+    try:
+        with HUB.send_lock:
+            sock.sendall(("LED %.2f %.2f %.2f\n" % tuple(led)).encode())
+        return True
+    except OSError:
+        return False
+
+
+def radio_keepalive():
+    """
+    Re-send the board's CURRENT lamp value over and over. It changes nothing on
+    the hardware and is invisible to the game, but the radio cannot sleep
+    through it, which is where the current actually goes. Deliberately does not
+    touch led_at or led_last, so the idle watchdog still measures real traffic.
+    """
+    if LED_KEEPALIVE_HZ <= 0:
+        print("[esp] radio keepalive disabled")
+        return
+    gap = 1.0 / LED_KEEPALIVE_HZ
+    print(f"[esp] radio keepalive at {LED_KEEPALIVE_HZ:g} Hz"
+          + (f", lamp floor {LED_FLOOR:.2f}" if LED_FLOOR > 0 else ""))
+    while True:
+        time.sleep(gap)
+        try:
+            with HUB.lock:
+                sock = HUB.esp_sock
+                last = HUB.led_last or [0.0, 0.0, 0.0]
+            if sock is None:
+                continue
+            led = tuple(max(LED_FLOOR, v) for v in last)
+            if _write_led(sock, led):
+                with HUB.lock:
+                    HUB.keepalive_writes += 1
+        except Exception as e:
+            print(f"[esp] radio keepalive: {e}")
 
 
 def led_watchdog():
@@ -512,6 +570,7 @@ if __name__ == "__main__":
         page = os.path.join(here, "controller.html")
     threading.Thread(target=esp_server, daemon=True).start()
     threading.Thread(target=led_watchdog, daemon=True).start()
+    threading.Thread(target=radio_keepalive, daemon=True).start()
     import ssl
     cert = os.path.join(here, "cert.pem")
     keyf = os.path.join(here, "key.pem")

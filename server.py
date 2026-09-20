@@ -326,14 +326,25 @@ def frame_bytes(fid):
 
 ELEVEN_BASE = "https://api.elevenlabs.io/v1"
 TTS_DIR = os.path.join(pipeline.LOG_DIR, "tts")
-# Flash is the cheap, fast one: half a credit per character against the
-# multilingual model's one, and about 75 ms to first byte.
-TTS_MODEL = os.environ.get("JZ_TTS_MODEL", "eleven_flash_v2_5")
-TTS_FORMAT = os.environ.get("JZ_TTS_FORMAT", "mp3_22050_32")
-# A hard ceiling on spend. The account has 10,000 credits and Flash bills half
-# a credit per character, so the default caps the whole demo at ~6,000 credits
-# and leaves the rest in the account. Cached lines never count against it.
-TTS_BUDGET_CHARS = int(os.environ.get("JZ_TTS_BUDGET_CHARS", "12000"))
+# Flash is the cheap fast one and it SOUNDS it: distilled for latency, it
+# reads a bark flat, which is most of what "robotic" meant. Multilingual v2 is
+# the natural-sounding model -- 830 ms against Flash's 210 ms here, and a full
+# credit per character instead of half. Both are affordable, because a line is
+# synthesised once and then served from disk forever, and because no line is
+# ever spoken twice there is nothing to re-bill.
+TTS_MODEL = os.environ.get("JZ_TTS_MODEL", "eleven_multilingual_v2")
+# 22 kHz at 32 kbps is a telephone. The thin, buzzy quality it adds is
+# indistinguishable from the model sounding synthetic, and it costs nothing to
+# fix: the bitrate is not billed, only the characters are.
+TTS_FORMAT = os.environ.get("JZ_TTS_FORMAT", "mp3_44100_128")
+# Half a credit per character on the distilled models, a full one otherwise.
+TTS_CREDIT_RATE = 0.5 if ("flash" in TTS_MODEL or "turbo" in TTS_MODEL) else 1.0
+# A hard ceiling on spend, expressed in CREDITS so it survives a model change.
+# The account holds 10,000; this leaves a deliberate reserve. At ~25 characters
+# a bark it is about 240 distinct lines, and cached lines never count.
+TTS_BUDGET_CREDITS = float(os.environ.get("JZ_TTS_BUDGET_CREDITS", "6000"))
+TTS_BUDGET_CHARS = int(os.environ.get(
+    "JZ_TTS_BUDGET_CHARS", str(int(TTS_BUDGET_CREDITS / TTS_CREDIT_RATE))))
 TTS_MAX_CHARS = 140              # a bark is eight words; anything longer is a bug
 TTS_TIMEOUT_S = float(os.environ.get("JZ_TTS_TIMEOUT_S", "12"))
 TTS_VOICES_TTL_S = 600.0
@@ -353,12 +364,30 @@ TTS_ROLE_VOICES = {
     "brute":  (["Harry", "Adam", "George", "Roger"], "pNInz6obpgDQGcFmaJgB"),
     "calm":   (["Sarah", "Alice", "River", "Bella", "Rachel"], "21m00Tcm4TlvDq8ikWAM"),
 }
+# Stability is a misleading name: LOW is not "more expressive", it is
+# "wobbly", and wobble reads as synthetic just as much as monotone does. These
+# sit in the middle and lean on similarity_boost and speaker_boost instead,
+# which keep the voice's own timbre rather than flattening it towards the
+# model's average. use_speaker_boost was simply missing before.
 TTS_SETTINGS = {
-    "walker": {"stability": 0.35, "similarity_boost": 0.7, "style": 0.4},
-    "runner": {"stability": 0.30, "similarity_boost": 0.7, "style": 0.5},
-    "brute":  {"stability": 0.45, "similarity_boost": 0.75, "style": 0.3},
-    "calm":   {"stability": 0.55, "similarity_boost": 0.75, "style": 0.15},
+    "walker": {"stability": 0.42, "similarity_boost": 0.82, "style": 0.45, "use_speaker_boost": True},
+    "runner": {"stability": 0.38, "similarity_boost": 0.80, "style": 0.55, "use_speaker_boost": True},
+    "brute":  {"stability": 0.50, "similarity_boost": 0.85, "style": 0.35, "use_speaker_boost": True},
+    "calm":   {"stability": 0.55, "similarity_boost": 0.82, "style": 0.30, "use_speaker_boost": True},
 }
+
+# A bare fragment with no terminator is read flat, because there is no sentence
+# for the model to shape. One character of punctuation buys the falling (or
+# rising) intonation that makes it sound like speech instead of a label.
+TTS_TERMINATORS = {"runner": "!"}
+
+
+def tts_speakable(text, role="walker"):
+    """What is actually sent to the model. The bubble keeps the original."""
+    text = " ".join(str(text or "").split()).strip()
+    if text and text[-1] not in ".!?\u2026:,;":
+        text += TTS_TERMINATORS.get(role, ".")
+    return text
 
 _tts_lock = threading.Lock()
 _tts_voice_cache = {"at": 0.0, "voices": [], "error": None}
@@ -464,7 +493,13 @@ def tts_say(text, role="walker"):
         meta["note"] = f"truncated to {TTS_MAX_CHARS} characters"
     voice_id, voice_name, how = tts_voice_for(role)
     meta.update(voice=voice_name, voice_id=voice_id, voice_choice=how)
-    digest = hashlib.sha256(f"{voice_id}|{TTS_MODEL}|{TTS_FORMAT}|{text}".encode("utf-8")).hexdigest()
+    speak = tts_speakable(text, role)
+    meta["spoken_text"] = speak
+    # The digest covers everything that changes the audio, so retuning any of
+    # it re-synthesises rather than serving a stale file.
+    digest = hashlib.sha256(
+        f"{voice_id}|{TTS_MODEL}|{TTS_FORMAT}|{json.dumps(TTS_SETTINGS.get(role), sort_keys=True)}|{speak}"
+        .encode("utf-8")).hexdigest()
     meta["key"] = digest[:16]
     path = os.path.join(TTS_DIR, digest + ".mp3")
     try:
@@ -484,13 +519,13 @@ def tts_say(text, role="walker"):
                          "and restart this service")
         return None, meta
     used = tts_usage()
-    if used["chars"] + len(text) > TTS_BUDGET_CHARS:
+    if used["chars"] + len(speak) > TTS_BUDGET_CHARS:
         meta["error"] = (f"character budget spent ({used['chars']}/{TTS_BUDGET_CHARS}); "
                          "raise JZ_TTS_BUDGET_CHARS to continue")
         return None, meta
 
     body = json.dumps({
-        "text": text,
+        "text": speak,
         "model_id": TTS_MODEL,
         "voice_settings": TTS_SETTINGS.get(role, TTS_SETTINGS["walker"]),
     }).encode("utf-8")
@@ -526,11 +561,13 @@ def tts_say(text, role="walker"):
         os.replace(tmp, path)
     except OSError as e:
         print(f"[tts] could not cache {digest[:12]}: {e}")
-    u = _tts_usage_add(chars=len(text), requests=1)
+    u = _tts_usage_add(chars=len(speak), requests=1)
     meta["bytes"] = len(audio)
     meta["spent_chars"] = u["chars"]
-    print(f"[tts] {role} {voice_name!r} {len(text)}ch {meta['ms']}ms "
-          f"{len(audio)}B  (budget {u['chars']}/{TTS_BUDGET_CHARS})")
+    meta["spent_credits"] = round(u["chars"] * TTS_CREDIT_RATE)
+    print(f"[tts] {role} {voice_name!r} {len(speak)}ch {meta['ms']}ms "
+          f"{len(audio)}B  (budget {u['chars']}/{TTS_BUDGET_CHARS} chars, "
+          f"~{round(u['chars'] * TTS_CREDIT_RATE)} credits)")
     return audio, meta
 
 
